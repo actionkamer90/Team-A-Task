@@ -1,0 +1,25 @@
+# Podman Quadlet unit (AlmaLinux / RHEL 9 and other systemd hosts without Docker).
+# Install:  cp deploy/team-task-tracker.container /etc/containers/systemd/
+#           podman build --format docker -t localhost/team-task-tracker:latest .
+#           systemctl daemon-reload && systemctl start team-task-tracker
+# Set TT_BASE_URL to the address people use to open the tracker (it goes into invite links).
+[Unit]
+Description=Team Task Tracker
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=localhost/team-task-tracker:latest
+ContainerName=team-task-tracker
+PublishPort=8080:8080
+Volume=tracker-data:/data
+Environment=TZ=Asia/Kuala_Lumpur
+Environment=TT_BASE_URL=http://192.168.1.116:8080
+Environment=TT_ARCHIVE_DAYS=2
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target default.target

@@ -49,6 +49,22 @@ Open the link from the logs, create the administrator account, then:
    and send it to them.
 3. The lead invites their own members the same way.
 
+### AlmaLinux / RHEL 9 with Podman (no Docker)
+
+This is how ddtaskserver runs it: a Podman Quadlet unit, managed by systemd, starting on boot.
+
+```bash
+podman build --format docker -t localhost/team-task-tracker:latest .
+cp deploy/team-task-tracker.container /etc/containers/systemd/   # edit TT_BASE_URL first
+systemctl daemon-reload && systemctl start team-task-tracker
+firewall-cmd --permanent --add-port=8080/tcp && firewall-cmd --reload
+podman exec team-task-tracker python server.py admin-link      # one-time admin setup link
+```
+
+With Podman, use `podman cp` / `podman exec team-task-tracker ...` wherever this README says
+`docker compose cp` / `docker compose exec app ...`. To update: `git pull`, rebuild the image,
+then `systemctl restart team-task-tracker`. Data stays in the `tracker-data` volume.
+
 ### Import the Excel workbook data
 
 Each team can bring its existing Daily Task Tracker workbook (`.xlsm` or `.xlsx`, 2026 template).
