@@ -523,8 +523,11 @@ async function loadHistory(t, box) {
     r.entries.forEach(e => {
       let lines;
       if (e.kind === "create") lines = [h("div", { text: "Created the task" })];
-      else if (e.kind === "approve") lines = [h("div", { class: "tgt", text: e.changes.request === "create" ? "Approved the new task from " + e.changes.of : "Approved " + e.changes.of + "'s changes" })];
-      else if (e.kind === "reject") lines = [h("div", { class: "tgt", text: "Rejected " + e.changes.of + "'s changes" + (e.changes.note ? ": " + e.changes.note : "") })];
+      else if (e.kind === "approve") lines = e.changes.request === "create" ? [h("div", { class: "tgt", text: "Approved the new task from " + e.changes.of })]
+        : [h("div", { class: "tgt", text: "Approved " + e.changes.of + "'s request" + ((e.changes.applied || []).length ? ":" : "") }), changeLines((e.changes.applied || []).filter(c => c[0] !== "percent"))];
+      else if (e.kind === "request") lines = [h("div", { class: "tgt", text: "Requested " + proposalText(e.changes) })];
+      else if (e.kind === "withdraw") lines = [h("div", { text: "Withdrew their request" })];
+      else if (e.kind === "reject") lines = [h("div", { class: "tgt", text: "Rejected " + e.changes.of + "'s request" + (e.changes.note ? ": " + e.changes.note : "") })];
       else if (e.kind === "target") lines = [h("div", { class: "tgt", text: e.changes.from ? "Changed the official target: " + fmt(e.changes.from) + " → " + fmt(e.changes.to) : "Set the official target: " + fmt(e.changes.to) })];
       else lines = e.changes.map(([f, a, b]) => h("div", { text: f === "progress" ? "Updated the progress notes" : (LOG_LABEL[f] || f) + ": " + describe(f, a) + " → " + describe(f, b) }));
       box.append(h("div", { class: "ev" }, h("div", {}, h("b", { text: e.by }), h("span", { class: "mono", text: "  ·  " + fmtDT(e.at) })), lines));
@@ -919,16 +922,36 @@ function personSheet(p) {
     p && !p.active ? h("div", { class: "note", text: "This person was removed. Saving adds them back to the team." }) : null], foot);
 }
 function teamSheet(tm) {
-  const isNew = !tm;
+  const isNew = !tm, admin = S.me.user.isAdmin;
   const fName = h("input", { type: "text", id: "tm-name", value: tm?.name || "", maxlength: "80", placeholder: "e.g. Team Network" });
   const fCats = h("textarea", { id: "tm-cats" }); fCats.value = (tm?.categories || DEFAULT_CATS).join("\n");
+  const custBox = h("div", { class: "field" });
+  const fNewCust = h("textarea", { id: "tm-newcust", placeholder: "One customer per line" });
+  let picks = null;
+  if (admin) {
+    custBox.append(h("span", { class: "lbl", text: "Customers this team works with" }), h("span", { class: "muted small", text: "Loading customers…" }));
+    api("GET", "/api/admin/customers").then(r => {
+      const mine = new Set(tm?.customers || []);
+      picks = teamChecks(r.customers.map(c => ({ id: c.name, name: c.name })), r.customers.filter(c => mine.has(c.name)).map(c => c.name));
+      custBox.replaceChildren(h("span", { class: "lbl", text: "Customers this team works with" }),
+        r.customers.length ? picks : h("span", { class: "muted small", text: "No customers on the list yet." }),
+        h("small", { class: "muted", text: "Tap a customer to select or clear it. You can change this later on the Customers tab." }));
+    }).catch(e => custBox.replaceChildren(h("span", { class: "bad-text", text: e.message })));
+  }
   openSheet(isNew ? "Create team" : "Team settings", [h("label", { class: "field" }, h("span", { text: "Team name" }), fName),
     h("label", { class: "field" }, h("span", { text: "Task categories (one per line)" }), fCats),
-    h("p", { class: "muted small m0", text: "Choose this team's customers on the Customers tab." })],
+    admin ? custBox : h("p", { class: "muted small m0", text: "Choose this team's customers on the Customers tab." }),
+    admin ? h("label", { class: "field" }, h("span", { text: "New customers for this team (one per line)" }), fNewCust,
+      h("small", { class: "muted", text: "Added to the customer list and to this team. A name already on the list is reused." })) : null],
     [h("button", { class: "btn primary", text: isNew ? "Create team" : "Save", onclick: async () => {
       const lines = x => x.value.split("\n").map(s => s.trim()).filter(Boolean);
       try {
         const body = { name: fName.value, categories: lines(fCats) };
+        if (admin) {
+          if (!picks && !isNew) return toast("The customer list is still loading.");
+          body.customers = [...(picks ? picks.value() : []), ...lines(fNewCust)];
+          if (!isNew) body.replaceCustomers = true;
+        }
         if (isNew) { const r = await api("POST", "/api/teams", body); closeSheet(); toast("Team created. Next, add its team lead."); await loadMe(); await selectTeam(r.id); S.view = "team"; render(); }
         else { await api("PUT", "/api/teams/" + tm.id, body); closeSheet(); toast("Saved"); await loadMe(); }
       } catch (e) { toast(e.message); }

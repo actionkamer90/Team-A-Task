@@ -158,6 +158,15 @@ def init_db():
             names += [r[0] for r in con.execute("SELECT DISTINCT customer FROM tasks WHERE TRIM(customer)<>'' ORDER BY customer")]
         add_customers(con, names)
         con.execute("INSERT OR IGNORE INTO customer_teams SELECT c.id, t.id FROM customers c, teams t")
+    if con.execute("PRAGMA user_version").fetchone()[0] < 1:
+        # History used to leave out an engineer's proposals (only the lead's approval showed). Add each past
+        # proposal to its task's history, by the engineer, at the time it was sent.
+        for r in con.execute("SELECT r.* FROM change_requests r JOIN tasks t ON t.id=r.task_id WHERE r.kind='edit'").fetchall():
+            prop = {k: v for k, v in json.loads(r["data"]).items() if k in ("target", "actual_date") and v}
+            if prop:
+                con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,?,'request',?)",
+                            (r["task_id"], r["at"], r["by_user"], json.dumps(prop)))
+        con.execute("PRAGMA user_version=1")
     cols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)")}
     if "approved" not in cols:  # upgrade from the first release
         con.execute("ALTER TABLE tasks ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
@@ -887,7 +896,10 @@ def api_team_update(h, tid):
     t = h.team(tid)
     name = s_field(h.body, "name", 80, True, t["name"])
     cats = list_field(h.body, "categories", 30, 60) if "categories" in h.body else t["categories"]
-    custs = list_field(h.body, "customers", 300, 100) if "customers" in h.body else []  # only adds customers to this team
+    custs = list_field(h.body, "customers", 300, 100) if "customers" in h.body else []
+    replace = "customers" in h.body and bool(h.body.get("replaceCustomers"))  # admin: these are exactly the team's customers
+    if replace and not h.user["is_admin"]:
+        raise ApiError(403, "Only an administrator can choose a team's whole customer list.")
     if not cats:
         raise bad("Add at least one category.")
     kpi = t["kpi"]
@@ -906,6 +918,9 @@ def api_team_update(h, tid):
     with Tx(h.con):
         h.con.execute("UPDATE teams SET name=?, categories=?, kpi=? WHERE id=?", (name, json.dumps(cats), json.dumps(kpi), tid))
         add_customers(h.con, custs, h.user["id"], [tid])
+        if replace:
+            h.con.execute("DELETE FROM customer_teams WHERE team_id=? AND customer_id NOT IN (SELECT id FROM customers WHERE name IN (%s))"
+                          % ",".join("?" * len(custs)), [tid] + custs)
     return {"ok": True}
 
 
@@ -1278,10 +1293,11 @@ def write_fields(h, task_id, d, user_id):
     h.con.execute("UPDATE tasks SET %s, updated_by=?, updated_at=? WHERE id=?" % sets, vals + [user_id, now_iso(), task_id])
 
 
-def set_target(h, t, new):
+def set_target(h, t, new, logged=True):
     h.con.execute("UPDATE tasks SET target=?, requested_target=COALESCE(requested_target, ?), target_set_by=?, target_set_at=?, updated_at=? WHERE id=?",
                   (new, new, h.user["id"], now_iso(), now_iso(), t["id"]))
-    log(h, t["id"], "target", {"from": t["target"], "to": new})
+    if logged:
+        log(h, t["id"], "target", {"from": t["target"], "to": new})
 
 
 @route("POST", "/api/teams/([a-z0-9-]+)/tasks")
@@ -1320,6 +1336,7 @@ def api_task_create(h, tid):
         if proposal:
             h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
                           (task_id, tid, "edit", json.dumps(proposal), h.user["id"], ts))
+            log(h, task_id, "request", proposal)
     return {"id": task_id, "no": no, "pending": sorted(proposal)}
 
 
@@ -1408,6 +1425,7 @@ def request_change(h, t, proposal):
                       (t["id"], t["team_id"], "edit", json.dumps(proposal), h.user["id"], now_iso()))
     if "target" in proposal and not t["target"]:
         h.con.execute("UPDATE tasks SET requested_target=? WHERE id=?", (proposal["target"], t["id"]))
+    log(h, t["id"], "request", proposal)
 
 
 def drop_proposal(h, r):
@@ -1446,12 +1464,30 @@ def api_task_delete(h, task_id):
 def api_task_history(h, task_id):
     t = get_task(h, task_id)
     h.need_member(t["team_id"])
-    rows = h.con.execute("SELECT l.*, u.display_name FROM task_log l LEFT JOIN users u ON u.id=l.user_id WHERE task_id=? ORDER BY l.id DESC",
-                         (t["id"],)).fetchall()
+    rows = [dict(r, changes=json.loads(r["changes"])) for r in h.con.execute(
+        "SELECT l.*, u.display_name FROM task_log l LEFT JOIN users u ON u.id=l.user_id WHERE task_id=? ORDER BY l.at, l.id", (t["id"],))]
+    # Approvals saved before requests were logged wrote separate entries in the same moment: the requester's completion
+    # date, then the lead's "official target". Fold them into the approval so it reads as approving the request.
+    for i, r in enumerate(rows):
+        ch = r["changes"]
+        if r["kind"] != "approve" or ch.get("request") != "edit" or "applied" in ch:
+            continue
+        ch["applied"] = []
+        for p in reversed(rows[max(0, i - 3):i]):
+            if p.get("folded") or p["at"][:16] != r["at"][:16]:
+                continue
+            if p["kind"] == "target" and p["user_id"] == r["user_id"]:
+                ch["applied"].append(["target", p["changes"]["from"], p["changes"]["to"]])
+                p["folded"] = True
+            elif p["kind"] == "edit" and p["user_id"] == ch["of"] and any(c[0] == "actual_date" for c in p["changes"]):
+                ch["applied"] = p["changes"] + ch["applied"]
+                p["folded"] = True
     names = {r["id"]: r["display_name"] for r in h.con.execute("SELECT id, display_name FROM users")}
     entries = []
-    for r in rows:
-        ch = json.loads(r["changes"])
+    for r in reversed(rows):
+        if r.get("folded"):
+            continue
+        ch = r["changes"]
         if isinstance(ch, dict) and "of" in ch:
             ch["of"] = names.get(ch["of"], "Someone")
         entries.append({"at": r["at"], "by": r["display_name"] or ("Excel workbook" if r["user_id"] is None else "Someone"), "kind": r["kind"], "changes": ch})
@@ -1522,12 +1558,11 @@ def api_request_approve(h, rid):
             if data.get("actual_date") and data["actual_date"] != t["actual_date"]:
                 ch = [["actual_date", t["actual_date"], data["actual_date"]]] + ([["percent", t["percent"], 100]] if t["percent"] != 100 else [])
                 write_fields(h, t["id"], {"actual_date": data["actual_date"], "percent": 100}, r["by_user"])
-                log(h, t["id"], "edit", ch, user_id=r["by_user"])
                 applied += ch
             if data.get("target") and data["target"] != t["target"]:
-                set_target(h, t, data["target"])
+                set_target(h, t, data["target"], logged=False)
                 applied.append(["target", t["target"], data["target"]])
-            log(h, t["id"], "approve", {"request": "edit", "of": r["by_user"]})
+            log(h, t["id"], "approve", {"request": "edit", "of": r["by_user"], "applied": applied})
             h.con.execute("UPDATE change_requests SET data=? WHERE id=?", (json.dumps(dict(data, _applied=applied)), r["id"]))
         else:  # older requests that carried a whole task
             data = json.loads(r["data"])
@@ -1573,6 +1608,7 @@ def api_request_cancel(h, rid):
             h.con.execute("DELETE FROM tasks WHERE id=? AND approved=0", (r["task_id"],))
         else:
             drop_proposal(h, r)
+            log(h, r["task_id"], "withdraw", {})
         h.con.execute("UPDATE change_requests SET status='cancelled', decided_by=?, decided_at=? WHERE id=?", (h.user["id"], now_iso(), r["id"]))
     return {"ok": True}
 

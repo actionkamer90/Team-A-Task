@@ -149,7 +149,7 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(t["percent"], 40)
         hist = self.member.req("GET", "/api/tasks/%d/history" % tid)[1]["entries"]
         kinds = [e["kind"] for e in hist]
-        self.assertEqual(kinds, ["edit", "target", "create"])
+        self.assertEqual(kinds, ["edit", "target", "request", "create"])  # Bob's proposed date shows, then Alice's official one
         self.assertIn(["percent", 0, 40], hist[0]["changes"])
         self.assertEqual(hist[1]["changes"], {"from": None, "to": "2027-01-15"})
         self.assertEqual(hist[1]["by"], "Alice")
@@ -310,8 +310,12 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(self._task(M, tid)["target"], "2026-12-22")
         hist = M.req("GET", "/api/tasks/%d/history" % tid)[1]["entries"]
         self.assertTrue(any(e["kind"] == "edit" and e["by"] == "Bob" for e in hist))
-        self.assertTrue(any(e["kind"] == "target" and e["by"] == "Alice" for e in hist))
         self.assertTrue(any(e["kind"] == "approve" and e["changes"]["of"] == "Bob" for e in hist))
+        # the history shows Bob's requests, then Alice approving Bob's request with what it changed
+        self.assertEqual([(e["kind"], e["by"], e["changes"]) for e in hist[:2]], [
+            ("approve", "Alice", {"request": "edit", "of": "Bob", "applied": [["target", "2026-12-15", "2026-12-22"]]}),
+            ("request", "Bob", {"target": "2026-12-22"})])
+        self.assertIn(("request", "Bob", {"target": "2026-12-20"}), [(e["kind"], e["by"], e["changes"]) for e in hist])
 
         # rejection keeps the official date and tells the member why
         M.req("PUT", "/api/tasks/%d" % tid, dict(self._body(self._task(M, tid)), target="2027-01-31"))
@@ -630,6 +634,51 @@ class TrackerTest(unittest.TestCase):
             self.assertEqual(server.customer_names(server.connect(), "c"), [])
         finally:
             server.DB_PATH = old
+
+    def test_old_requests_show_in_history_after_upgrade(self):
+        """Before requests were logged, an approval showed only as the lead setting the target."""
+        path = os.path.join(TMP, "history.db")
+        con = server.sqlite3.connect(path)
+        con.executescript(server.SCHEMA)
+        con.execute("INSERT INTO users(id,login,display_name,pw_hash,created_at) VALUES(1,'k','Khaidir','x','x'),(2,'a','Arif','x','x')")
+        con.execute("INSERT INTO teams VALUES('lm','LM','[]','[]','{}','x')")
+        con.execute("INSERT INTO tasks(id,team_id,no,category,title,urgency,target,created_at,updated_at) VALUES(1,'lm',1,'x','t','Low','2026-11-13','x','x')")
+        con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(1,'2026-11-10T07:13:00+00:00',2,'create','[]'),"
+                    "(1,'2026-11-10T11:44:05+00:00',1,'target','{\"from\": null, \"to\": \"2026-11-13\"}'),"
+                    "(1,'2026-11-10T11:44:05+00:00',1,'approve','{\"request\": \"edit\", \"of\": 2}')")
+        con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(1,'lm','edit',"
+                    "'{\"target\": \"2026-11-13\", \"_applied\": []}',2,'2026-11-10T09:00:00+00:00','approved')")
+        con.commit()
+        con.close()
+        old, server.DB_PATH = server.DB_PATH, path
+        try:
+            server.init_db()
+            server.init_db()  # the fill-in runs once
+
+            class H:
+                pass
+            h = H()
+            h.con, h.user = server.connect(), {"id": 1, "is_admin": 1}
+            h.need_member = lambda tid: "admin"
+            hist = server.api_task_history(h, "1")["entries"]
+            self.assertEqual([(e["kind"], e["by"], e["changes"]) for e in hist], [
+                ("approve", "Khaidir", {"request": "edit", "of": "Arif", "applied": [["target", None, "2026-11-13"]]}),
+                ("request", "Arif", {"target": "2026-11-13"}),
+                ("create", "Arif", [])])
+        finally:
+            server.DB_PATH = old
+
+    def test_admin_chooses_a_teams_customers(self):
+        A, L = self.admin, self.lead
+        A.req("POST", "/api/admin/customers", {"names": ["Pick One", "Pick Two"], "teams": []})
+        s, r, _ = A.req("POST", "/api/teams", {"name": "Team With Cust", "categories": ["Project"], "customers": ["Pick One", "Brand New"]})
+        tid = r["id"]
+        self.assertEqual(A.req("GET", "/api/teams/%s" % tid)[1]["customers"], ["Brand New", "Pick One"])
+        s, r, _ = A.req("PUT", "/api/teams/%s" % tid, {"name": "Team With Cust", "categories": ["Project"], "customers": ["pick two"], "replaceCustomers": True})
+        self.assertEqual(s, 200)
+        self.assertEqual(A.req("GET", "/api/teams/%s" % tid)[1]["customers"], ["Pick Two"])
+        self.assertIn("Brand New", [c["name"] for c in A.req("GET", "/api/admin/customers")[1]["customers"]])  # still on the list
+        self.assertEqual(L.req("PUT", "/api/teams/automation", {"customers": [], "replaceCustomers": True})[0], 403)
 
     # helpers
     def _task(self, cli, tid):
