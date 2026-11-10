@@ -23,6 +23,8 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Multiple teams.** Each team has its own people, categories, customers and KPI settings.
 - **Daily tasks.** Status is calculated from the target and actual dates, as in the workbook:
   On-Going, Delay, No Target, Completed Early, Completed On Time, Completed Late.
+- **Sorting.** On the Tracker and Archive, click any column header to sort by it (click again to
+  reverse), or use the *Sort by* menu, which also works on phones. Each tab remembers its own sort.
 - **Archive.** Tasks move to the Archive 2 days after their actual date (the old
   `ArchiveOldCompletedTasks` rule; change with `TT_ARCHIVE_DAYS`).
 - **KPI dashboard (leads only).** KPI = On-time % × 80% + Early % × 20%. Each lead and support

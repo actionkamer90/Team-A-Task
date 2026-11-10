@@ -273,11 +273,75 @@ function applyFilters(list, ignoreStatus) {
     return true;
   });
 }
+/* ---------- sorting (Daily tasks and Archive) ---------- */
+const URG_ORDER = ["Low", "Medium", "High", "Critical"];
+const STATUS_RANK = { "Delay": 0, "On-Going": 1, "No Target": 2, "Completed Late": 3, "Completed On Time": 4, "Completed Early": 5, "Completed": 6 };
+const firstName = a => (a[0] ? personName(a[0]) : "").toLowerCase();
+// get: value to compare; desc: first click sorts high-to-low; label: name in the Sort by menu
+const SORTS = {
+  status: { label: "Status (most urgent first)", get: t => STATUS_RANK[t.status] ?? 9 },
+  no: { label: "Task no", get: t => t.no },
+  category: { label: "Category", get: t => (t.category || "").toLowerCase() },
+  title: { label: "Task name", get: t => t.title.toLowerCase() },
+  pct: { label: "% done", get: t => t.percent, desc: true },
+  urgency: { label: "Urgency", get: t => URG_ORDER.indexOf(t.urgency), desc: true },
+  customer: { label: "Customer", get: t => (t.customer || "").toLowerCase() },
+  lead: { label: "Lead engineer", get: t => firstName(t.lead) },
+  support: { label: "Support engineer", get: t => firstName(t.support) },
+  start: { label: "Start date", get: t => t.startDate },
+  target: { label: "Target date", get: t => t.effTarget },
+  actual: { label: "Actual (completed) date", get: t => t.actualDate, desc: true },
+};
+// table columns, in order, with the sort each header uses
+const COLUMNS = [["No", "no"], ["Category", "category"], ["Main task / project", "title"], ["%", "pct"], ["Urgency", "urgency"], ["Customer", "customer"],
+  ["Lead", "lead"], ["Support", "support"], ["Start", "start"], ["Target", "target"], ["Actual", "actual"], ["Status", "status"]];
+const SORT_DEFAULT = { tracker: { k: "status", d: 1 }, completed: { k: "actual", d: -1 } };
+S.sort = (() => {
+  try { const v = JSON.parse(store.get("tt.sort") || "{}"); const ok = x => x && SORTS[x.k] && (x.d === 1 || x.d === -1);
+    return { tracker: ok(v.tracker) ? v.tracker : SORT_DEFAULT.tracker, completed: ok(v.completed) ? v.completed : SORT_DEFAULT.completed }; } catch { return { ...SORT_DEFAULT }; }
+})();
+function sortTasks(list, view) {
+  const { k, d } = S.sort[view], get = SORTS[k].get;
+  const blank = v => v == null || v === "" || v === -1;
+  const cmp = (x, y) => typeof x === "string" ? x.localeCompare(y) : x - y;
+  return list.sort((a, b) => {
+    const x = get(a), y = get(b);
+    if (blank(x) !== blank(y)) return blank(x) ? 1 : -1; // empty values always go last
+    const c = blank(x) ? 0 : cmp(x, y) * d;
+    if (c) return c;
+    if (k === "status") return (a.effTarget || "9999").localeCompare(b.effTarget || "9999") || a.no - b.no; // same status: nearest target first
+    return a.no - b.no;
+  });
+}
+let sortFocus = null; // keeps keyboard focus on the sort control after the table is redrawn
+function setSort(view, k, d) {
+  const cur = S.sort[view];
+  S.sort[view] = d ? { k, d } : cur.k === k ? { k, d: -cur.d } : { k, d: SORTS[k].desc ? -1 : 1 };
+  store.set("tt.sort", JSON.stringify(S.sort)); refresh();
+}
+function sortControls(view) {
+  const s = S.sort[view];
+  const sel = h("select", { id: "sort-" + view, onchange: e => { sortFocus = "sort-" + view; setSort(view, e.target.value, SORTS[e.target.value].desc ? -1 : 1); } },
+    Object.entries(SORTS).filter(([k]) => view === "tracker" || k !== "status" || s.k === "status").map(([k, v]) => h("option", { value: k, text: v.label })));
+  sel.value = s.k;
+  return h("div", { class: "sortbar" },
+    h("label", { class: "field" }, h("span", { text: "Sort by" }), sel),
+    h("button", { class: "btn", id: "sortdir-" + view, type: "button", "aria-label": "Sort direction: " + (s.d > 0 ? "ascending" : "descending") + ". Select to reverse.",
+      text: s.d > 0 ? "↑ Ascending" : "↓ Descending", onclick: () => { sortFocus = "sortdir-" + view; setSort(view, s.k, -s.d); } }));
+}
+function afterSortRender() { if (sortFocus) { document.getElementById(sortFocus)?.focus(); sortFocus = null; } }
+
 function taskTable(list, archive) {
   const names = a => a.map(personName).join(" / ") || "—";
+  const view = archive ? "completed" : "tracker", s = S.sort[view];
   if (!list.length) return h("div", { class: "empty", text: archive ? "No archived tasks match these filters." : "No tasks match these filters. Use New task to add one." });
   return h("div", { class: "tscroll" }, h("table", {},
-    h("thead", {}, h("tr", {}, ["No", "Category", "Main task / project", "%", "Urgency", "Customer", "Lead", "Support", "Start", "Target", "Actual", "Status"].map((c, i) => h("th", { class: i === 3 ? "num" : "", text: c })))),
+    h("thead", {}, h("tr", {}, COLUMNS.map(([c, k], i) => {
+      const on = s.k === k;
+      return h("th", { class: (i === 3 ? "num " : "") + "sortable" + (on ? " sorted" : ""), "aria-sort": on ? (s.d > 0 ? "ascending" : "descending") : "none" },
+        h("button", { type: "button", id: "th-" + view + "-" + k, title: "Sort by " + SORTS[k].label.toLowerCase(),
+          onclick: () => { sortFocus = "th-" + view + "-" + k; setSort(view, k); } }, c, h("span", { class: "arrow", "aria-hidden": "true", text: on ? (s.d > 0 ? "↑" : "↓") : "↕" })));
+    }))),
     h("tbody", {}, list.map(t => h("tr", { class: "click", tabindex: "0", onclick: () => taskSheet(t), onkeydown: e => { if (e.key === "Enter") taskSheet(t); } },
       h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }),
       h("td", { class: "nowrap", text: t.category || "—" }),
@@ -314,9 +378,8 @@ function viewTracker(main) {
     const cur = applyFilters(S.tasks.filter(t => !t.archived), true), open = cur.filter(t => !t.actualDate), c = s => open.filter(t => t.status === s).length;
     tiles.replaceChildren(tile("Open tasks", open.length), tile("On-going", c("On-Going"), "info"), tile("Delayed", c("Delay"), "bad"),
       tile("Awaiting approval", cur.filter(t => !t.approved || t.changePending).length, "warn"), tile("No target date", c("No Target"), "warn"));
-    const order = { "Delay": 0, "On-Going": 1, "No Target": 2 };
-    const list = applyFilters(S.tasks.filter(t => !t.archived)).sort((a, b) => ((order[a.status] ?? 3) - (order[b.status] ?? 3)) || ((a.effTarget || "9") < (b.effTarget || "9") ? -1 : 1));
-    body.replaceChildren(taskTable(list, false));
+    const list = sortTasks(applyFilters(S.tasks.filter(t => !t.archived)), "tracker");
+    body.replaceChildren(sortControls("tracker"), taskTable(list, false)); afterSortRender();
   };
 }
 function viewCompleted(main) {
@@ -325,8 +388,8 @@ function viewCompleted(main) {
     h("p", { class: "muted m0", text: "Tasks move here " + (S.me.archiveDays || 2) + " days after their actual (completed) date." }),
     filterBar(["Completed Early", "Completed On Time", "Completed Late", "Completed"]), body);
   refreshFn = () => {
-    const list = applyFilters(S.tasks.filter(t => t.archived)).sort((a, b) => a.actualDate < b.actualDate ? 1 : -1);
-    count.textContent = list.length + " tasks"; body.replaceChildren(taskTable(list, true));
+    const list = sortTasks(applyFilters(S.tasks.filter(t => t.archived)), "completed");
+    count.textContent = list.length + " tasks"; body.replaceChildren(sortControls("completed"), taskTable(list, true)); afterSortRender();
   };
 }
 
