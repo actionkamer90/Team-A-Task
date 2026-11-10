@@ -215,7 +215,12 @@ function inviteForm(info) {
   body.push(form);
   return card(title, body);
 }
-async function logout() { try { await api("POST", "/api/logout", {}); } catch { } S.me = null; S.team = null; S.phase = "login"; closeSheet(); render(); }
+async function logout() {
+  try { await api("POST", "/api/logout", {}); } catch { }
+  S.me = null; S.team = null; S.teamId = null; S.phase = "login";
+  S.f = { q: "", person: "", status: "", cat: "", urg: "", mine: false };  // the next person starts with clean filters
+  closeSheet(); render();
+}
 function accountSheet() {
   const cur = h("input", { type: "password", id: "pw-cur", autocomplete: "current-password" });
   const n1 = h("input", { type: "password", id: "pw-new", autocomplete: "new-password" });
@@ -248,12 +253,12 @@ function filterBar(statuses) {
     sel("f-cat", "Category", cats, "cat"), sel("f-urg", "Urgency", team()?.urgencies || [], "urg"),
     myKey() ? h("label", { class: "check" }, h("input", { type: "checkbox", id: "f-mine", checked: f.mine, onchange: e => { f.mine = e.target.checked; refresh(); } }), "Only my tasks") : null);
 }
-function applyFilters(list) {
+function applyFilters(list, ignoreStatus) {
   const f = S.f, q = f.q.trim().toLowerCase(), mk = myKey();
   return list.filter(t => {
     if (f.person && !t.lead.includes(f.person) && !t.support.includes(f.person)) return false;
     if (f.mine && mk && !t.lead.includes(mk) && !t.support.includes(mk)) return false;
-    if (f.status && t.status !== f.status) return false; if (f.cat && t.category !== f.cat) return false; if (f.urg && t.urgency !== f.urg) return false;
+    if (f.status && !ignoreStatus && t.status !== f.status) return false; if (f.cat && t.category !== f.cat) return false; if (f.urg && t.urgency !== f.urg) return false;
     if (q && ![t.title, t.customer, t.progress, t.category, ...t.lead.map(personName), ...t.support.map(personName)].join(" ").toLowerCase().includes(q)) return false;
     return true;
   });
@@ -275,7 +280,11 @@ function taskTable(list, archive) {
       h("td", { class: "mono nowrap" }, fmt(t.effTarget), t.pending ? h("span", { class: "pending", text: "awaiting lead" }) : null),
       h("td", { class: "mono nowrap", text: fmt(t.actualDate) }),
       h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status }),
-        !t.approved ? h("span", { class: "pending", text: "new · awaiting approval" }) : t.changePending ? h("span", { class: "pending", text: "new target awaiting approval" }) : null))))));
+        !t.approved ? h("span", { class: "pending", text: "new · awaiting approval" }) : t.changePending ? h("span", { class: "pending", text: pendingLabel(t.pendingFields) + " awaiting approval" }) : null))))));
+}
+function pendingLabel(fields) {
+  const f = fields || [];
+  return f.includes("target") && f.includes("actual_date") ? "new target & completion" : f.includes("actual_date") ? "completion" : "new target";
 }
 function tile(label, val, cls) { return h("div", { class: "tile " + (cls || "") }, h("span", { class: "lbl", text: label }), h("b", { text: val })); }
 function exportBtn() {
@@ -291,11 +300,12 @@ function viewTracker(main) {
     h("div", { class: "row" }, exportBtn(), canAdd ? h("button", { class: "btn primary", onclick: () => taskSheet(null), text: "+ New task" }) : null)),
     tiles, filterBar(["On-Going", "Delay", "No Target", "Completed Early", "Completed On Time", "Completed Late"]), body);
   refreshFn = () => {
-    const cur = S.tasks.filter(t => !t.archived), open = cur.filter(t => !t.actualDate), c = s => open.filter(t => t.status === s).length;
+    // the tiles follow every filter except Status (they are the status breakdown), so "Only my tasks" shows your own numbers
+    const cur = applyFilters(S.tasks.filter(t => !t.archived), true), open = cur.filter(t => !t.actualDate), c = s => open.filter(t => t.status === s).length;
     tiles.replaceChildren(tile("Open tasks", open.length), tile("On-going", c("On-Going"), "info"), tile("Delayed", c("Delay"), "bad"),
       tile("Awaiting approval", cur.filter(t => !t.approved || t.changePending).length, "warn"), tile("No target date", c("No Target"), "warn"));
     const order = { "Delay": 0, "On-Going": 1, "No Target": 2 };
-    const list = applyFilters(cur).sort((a, b) => ((order[a.status] ?? 3) - (order[b.status] ?? 3)) || ((a.effTarget || "9") < (b.effTarget || "9") ? -1 : 1));
+    const list = applyFilters(S.tasks.filter(t => !t.archived)).sort((a, b) => ((order[a.status] ?? 3) - (order[b.status] ?? 3)) || ((a.effTarget || "9") < (b.effTarget || "9") ? -1 : 1));
     body.replaceChildren(taskTable(list, false));
   };
 }
@@ -344,7 +354,7 @@ function taskSheet(t) {
   const myReq = t?.request?.mine ? t.request : null;
   const othersPending = t && t.changePending && !myReq;
   // details save straight away; a member's proposed target date waits for the lead, so show their proposal in the date field
-  const src = myReq && myReq.data.target ? { ...t, effTarget: myReq.data.target } : t;
+  const src = myReq ? { ...t, effTarget: myReq.data.target || t.effTarget, actualDate: myReq.data.actual_date || t.actualDate } : t;
   const T = src || { category: "", title: "", progress: "", percent: 0, urgency: "Medium", customer: "", lead: mk ? [mk] : [], support: [], startDate: S.today, effTarget: "", actualDate: "" };
   const locked = ro;
   const fCat = h("select", { id: "t-cat", disabled: locked }, h("option", { value: "", text: "Choose…" }), tm.categories.map(c => h("option", { value: c, text: c })));
@@ -360,18 +370,18 @@ function taskSheet(t) {
   } });
   const fLead = peopleToggles("t-lead", T.lead, locked), fSup = peopleToggles("t-sup", T.support, locked);
   const fStart = h("input", { type: "date", id: "t-start", value: T.startDate || "", disabled: locked });
-  const fActual = h("input", { type: "date", id: "t-actual", value: T.actualDate || "", max: S.today, disabled: locked });
+  const fActual = h("input", { type: "date", id: "t-actual", value: T.actualDate || "", max: S.today, disabled: locked || (othersPending && !lead) });
   const fTarget = h("input", { type: "date", id: "t-target", value: T.effTarget || "", disabled: locked || (othersPending && !lead) });
   const help = lead ? "Saving sets the official target date. Changes are logged."
     : t?.target ? "Official target " + fmt(t.target) + ". A new date needs your team lead's approval." : "Your proposed target. Your team lead approves it.";
   const banners = [];
   if (ro) banners.push(h("div", { class: "note", text: "You can view this task. Only its Lead Engineer and the team lead can change it." }));
   if (t && t.approved === false) banners.push(h("div", { class: "note warn", text: lead ? "New task waiting for approval. Review it on the Approvals tab." : "This new task is waiting for your team lead's approval. You can still adjust it." }));
-  if (myReq) banners.push(h("div", { class: "note warn", text: "Your new target date (" + fmt(myReq.data.target) + ", sent " + fmtDT(myReq.at) + ") is waiting for your team lead. Proposing another date replaces it." }));
-  if (othersPending && !lead) banners.push(h("div", { class: "note warn", text: "Another engineer proposed a new target date for this task. You can still update the details." }));
-  if (lead && t?.request) banners.push(h("div", { class: "note warn" }, "An engineer proposed a new target date (" + fmt(t.request.data.target) + "). ",
+  if (myReq) banners.push(h("div", { class: "note warn", text: "Waiting for your team lead (sent " + fmtDT(myReq.at) + "): " + proposalText(myReq.data) + ". Proposing again replaces it." }));
+  if (othersPending && !lead) banners.push(h("div", { class: "note warn", text: "Another engineer's " + pendingLabel(t.pendingFields) + " is waiting for the team lead. You can still update the other details." }));
+  if (lead && t?.request) banners.push(h("div", { class: "note warn" }, "An engineer proposed: " + proposalText(t.request.data) + ". ",
     h("button", { class: "btn small", type: "button", text: "Review in Approvals", onclick: () => { closeSheet(); S.view = "approvals"; render(); } })));
-  if (!lead && !ro) banners.push(h("p", { class: "muted small m0", text: "Your changes to the details save straight away. A new target date needs your team lead's approval." }));
+  if (!lead && !ro) banners.push(h("p", { class: "muted small m0", text: "Your changes to the details save straight away. A new target date, or a completed date earlier than today, needs your team lead's approval." }));
   const hist = h("div", { class: "hist" });
   if (t) loadHistory(t, hist);
   const body = [dl, ...banners,
@@ -384,7 +394,8 @@ function taskSheet(t) {
     h("div", { class: "field" }, h("span", { class: "lbl", text: "Support engineer" }), fSup),
     h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Start date" }), fStart),
       h("label", { class: "field" }, h("span", { text: "Target date" + (lead ? "" : " (lead approves)") }), fTarget, h("small", { class: "muted", text: help }))),
-    h("label", { class: "field w50" }, h("span", { text: "Actual (completed) date" }), fActual),
+    h("label", { class: "field w50" }, h("span", { text: "Actual (completed) date" }), fActual,
+      lead ? null : h("small", { class: "muted", text: "Use today's date. An earlier date needs your team lead's approval." })),
     t ? h("p", { class: "muted small m0", text: "Status: " + t.status + (t.updatedAt ? " · last updated " + fmtDT(t.updatedAt) : "") }) : null,
     hist];
   const saveLabel = isNew ? "Add task" : "Save changes";
@@ -401,7 +412,7 @@ function taskSheet(t) {
       const r = isNew ? await api("POST", "/api/teams/" + S.teamId + "/tasks", data) : await api("PUT", "/api/tasks/" + t.id, data);
       closeSheet();
       if (r.changed === false) toast("No changes to save");
-      else if (r.pending) toast((isNew ? "Task added. " : "Saved. ") + "The target date is waiting for your team lead's approval.");
+      else if (r.pending && r.pending.length) toast((isNew ? "Task added. " : "Saved. ") + "Waiting for your team lead's approval: " + r.pending.map(k => k === "target" ? "target date" : "backdated completion").join(" and ") + ".");
       else toast(isNew ? "Task added" : "Changes saved");
       reloadTeam();
     } catch (e) { save.disabled = false; toast(e.message); }
@@ -450,16 +461,29 @@ async function loadHistory(t, box) {
 function changeLines(changes) {
   return (changes || []).map(([f, a, b]) => h("div", { text: f === "progress" ? "Updated the progress notes" : (LOG_LABEL[f] || f) + ": " + describe(f, a) + " → " + describe(f, b) }));
 }
-function reqKind(r) { return r.kind === "create" ? "New task" : (r.changes || []).every(c => c[0] === "target") ? "Target date" : "Changes"; }
+function reqKind(r) {
+  if (r.kind === "create") return "New task";
+  const k = Object.keys(r.proposed || {});
+  if (k.length === 2) return "Target & completion";
+  if (k[0] === "actual_date") return "Backdated completion";
+  if (k[0] === "target") return "Target date";
+  return "Changes";
+}
+function proposalText(d) {
+  const parts = [];
+  if (d.target) parts.push("target date " + fmt(d.target));
+  if (d.actual_date) parts.push("completed on " + fmt(d.actual_date) + " (backdated)");
+  return parts.join(" and ");
+}
 function requestTitle(r) { return "#" + String(r.no || "").padStart(3, "0") + " " + (r.title || "(deleted task)"); }
 function viewApprovals(main) {
   const list = h("div", { class: "grid2" });
   main.append(h("div", { class: "row between" }, h("h2", { text: team().name + " · approvals" }),
-    h("span", { class: "muted", text: "Target dates proposed by engineers wait here until you approve them." })), list);
+    h("span", { class: "muted", text: "Proposed target dates and backdated completions wait here until you approve them." })), list);
   async function load() {
     try {
       const r = await api("GET", "/api/teams/" + S.teamId + "/requests");
-      if (!r.requests.length) { list.replaceChildren(h("div", { class: "panel" }, h("p", { class: "muted m0", text: "Nothing waiting. Requests appear here when an engineer proposes a target date." }))); return; }
+      if (!r.requests.length) { list.replaceChildren(h("div", { class: "panel" }, h("p", { class: "muted m0", text: "Nothing waiting. Requests appear here when an engineer proposes a target date or completes a task with an earlier date." }))); return; }
       list.replaceChildren(...r.requests.map(rq => {
         const note = h("input", { type: "text", id: "rej-" + rq.id, maxlength: "500", placeholder: "Reason (shown to " + rq.by + ")" });
         const rejectRow = h("div", { class: "row", hidden: true }, note,
@@ -473,7 +497,7 @@ function viewApprovals(main) {
         return h("div", { class: "panel" },
           h("div", { class: "row between" }, h("h3", { text: requestTitle(rq) }), h("span", { class: "pill " + (rq.kind === "create" ? "info" : "warn"), text: reqKind(rq) })),
           h("div", { class: "muted small", text: rq.by + " · " + fmtDT(rq.at) }),
-          h("div", { class: "hist" }, detail),
+          h("div", { class: "hist" }, detail, rq.backdatedDays ? h("div", { class: "tgt", text: "Completed date is " + rq.backdatedDays + " day" + (rq.backdatedDays === 1 ? "" : "s") + " before today." }) : null),
           h("div", { class: "row" },
             h("button", { class: "btn primary", text: "Approve", onclick: () => decide(rq, "approve") }),
             h("button", { class: "btn", text: "Reject…", onclick: e => { rejectRow.hidden = false; e.target.hidden = true; note.focus(); } }),
@@ -496,7 +520,7 @@ const REQ_STATUS = { pending: ["Waiting for approval", "warn"], approved: ["Appr
 function viewRequests(main) {
   const list = h("div");
   main.append(h("div", { class: "row between" }, h("h2", { text: team().name + " · my requests" }),
-    h("span", { class: "muted", text: "Target dates you proposed, and what your team lead decided (last 30 days)." })), list);
+    h("span", { class: "muted", text: "Target dates and backdated completions you sent, and what your team lead decided (last 30 days)." })), list);
   async function load() {
     try {
       const r = await api("GET", "/api/teams/" + S.teamId + "/requests");
@@ -507,7 +531,7 @@ function viewRequests(main) {
           const [label, cls] = REQ_STATUS[rq.status] || [rq.status, ""];
           return h("tr", {},
             h("td", {}, h("div", { class: "task-title", text: requestTitle(rq) }), rq.kind === "edit" ? h("div", { class: "hist" },
-              reqKind(rq) === "Target date" && rq.proposedTarget ? h("div", { text: "Proposed target date: " + fmt(rq.proposedTarget) }) : changeLines(rq.changes)) : null),
+              Object.keys(rq.proposed || {}).length ? h("div", { text: "Proposed: " + proposalText(rq.proposed) }) : changeLines(rq.changes)) : null),
             h("td", { text: reqKind(rq) }),
             h("td", { class: "mono nowrap", text: fmtDT(rq.at) }),
             h("td", {}, h("span", { class: "pill " + cls, text: label }), rq.decidedBy ? h("div", { class: "muted small", text: rq.decidedBy + " · " + fmtDT(rq.decidedAt) }) : null),
@@ -705,18 +729,42 @@ function teamSheet(tm) {
 
 /* ---------- all teams (admin) ---------- */
 function viewAdmin(main) {
-  const list = h("div");
+  const list = h("div"), admins = h("div");
   main.append(h("div", { class: "row between" }, h("h2", { text: "All teams" }), h("button", { class: "btn primary", text: "+ Create team", onclick: () => teamSheet(null) })),
-    h("p", { class: "muted m0", text: "As administrator you can open every team. Create a team, add its lead on Team & Invites, and send the lead an invite link. The lead then invites their own members." }), list);
-  refreshFn = async () => {
+    h("p", { class: "muted m0", text: "As administrator you can open every team. Create a team, add its lead on Team & Invites, and send the lead an invite link. The lead then invites their own members." }), list,
+    h("div", { class: "row between" }, h("h2", { text: "Administrators" }), h("button", { class: "btn", text: "Invite new administrator", onclick: inviteAdmin })),
+    h("p", { class: "muted m0", text: "Administrators manage every team, create teams and choose team leads. Give access to someone who already has a login below, or invite someone new." }), admins);
+  async function load() {
     try {
-      const r = await api("GET", "/api/admin/teams");
+      const [r, u] = await Promise.all([api("GET", "/api/admin/teams"), api("GET", "/api/admin/users")]);
       list.replaceChildren(h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["Team", "Team leads", "People", "Joined", "Open tasks", ""].map(c => h("th", { text: c })))),
         h("tbody", {}, r.teams.map(t => h("tr", {}, h("td", { text: t.name }), h("td", { text: t.leads.join(", ") || "None yet" }), h("td", { class: "mono", text: t.people }),
           h("td", { class: "mono", text: t.joined }), h("td", { class: "mono", text: t.open }),
           h("td", {}, h("button", { class: "btn small", text: "Open", onclick: async () => { await selectTeam(t.id); S.view = "team"; render(); } }))))))));
+      admins.replaceChildren(h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["Name", "Login", "Teams", "Access", ""].map(c => h("th", { text: c })))),
+        h("tbody", {}, u.users.map(x => h("tr", {}, h("td", { text: x.name + (x.isMe ? " (you)" : "") }), h("td", { class: "mono", text: x.login }),
+          h("td", { class: "small", text: x.teams.join(", ") || "—" }),
+          h("td", {}, x.isAdmin ? h("span", { class: "pill info", text: "Administrator" }) : h("span", { class: "muted", text: "Team access" })),
+          h("td", {}, x.isMe ? null : h("button", { class: "btn small", text: x.isAdmin ? "Remove admin access" : "Make administrator", onclick: async () => {
+            try { await api("PUT", "/api/admin/users/" + x.id, { isAdmin: !x.isAdmin }); toast(x.isAdmin ? x.name + " is no longer an administrator" : x.name + " is now an administrator"); load(); }
+            catch (e) { toast(e.message); }
+          } }))))))));
     } catch (e) { list.replaceChildren(h("p", { class: "bad-text", text: e.message })); }
-  };
+  }
+  refreshFn = load;
+}
+async function inviteAdmin() {
+  try {
+    const r = await api("POST", "/api/admin/invite", {});
+    const inp = h("input", { type: "text", id: "admin-link", readOnly: true, value: r.url, onfocus: e => e.target.select() });
+    openSheet("Invite a new administrator", [
+      h("p", { class: "m0", text: "Send this link privately. The person opens it, chooses a login and password, and gets administrator access. It works once and expires " + fmtDT(r.expires) + "." }),
+      h("div", { class: "linkbox" }, inp, h("button", { class: "btn small", text: "Copy", onclick: async () => {
+        try { await navigator.clipboard.writeText(inp.value); toast("Link copied"); } catch { inp.focus(); inp.select(); toast("Press Ctrl+C to copy the selected text."); }
+      } })),
+      h("p", { class: "muted small m0", text: "For someone who already has a login, use Make administrator in the list instead." })],
+      [h("button", { class: "btn right", text: "Done", onclick: closeSheet })]);
+  } catch (e) { toast(e.message); }
 }
 
 boot();

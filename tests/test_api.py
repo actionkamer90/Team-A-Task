@@ -174,7 +174,7 @@ class TrackerTest(unittest.TestCase):
 
     def test_kpi_lead_only_and_formula(self):
         self.assertEqual(self.member.req("GET", "/api/teams/automation/kpi")[0], 403)
-        s, k, _ = self.lead.req("GET", "/api/teams/automation/kpi?from=2026-01-01&to=2026-12-31")
+        s, k, _ = self.lead.req("GET", "/api/teams/automation/kpi?from=2026-03-01&to=2026-03-31")  # the fixture's completed tasks
         self.assertEqual(s, 200)
         rows = {r["key"]: r for r in k["rows"]}
         # Workbook formula: KPI = 80% x (E - lead late - support late)/E + 20% x early involvements/E
@@ -279,7 +279,7 @@ class TrackerTest(unittest.TestCase):
 
         # details save directly, no request
         s, r, _ = M.req("PUT", "/api/tasks/%d" % tid, dict(self._body(t), percent=60, progress="halfway"))
-        self.assertEqual((s, r["pending"]), (200, False))
+        self.assertEqual((s, r["pending"]), (200, []))
         t = self._task(M, tid)
         self.assertEqual((t["percent"], t["progress"]), (60, "halfway"))
         self.assertFalse(t["changePending"])
@@ -325,6 +325,63 @@ class TrackerTest(unittest.TestCase):
         self.assertFalse(r.get("pending"))
         self.assertEqual(self._task(M, tid)["target"], "2027-02-01")
 
+    def test_backdated_completion_needs_approval(self):
+        import datetime as _dt
+        M, L = self.member, self.lead
+        today = _dt.date.today()
+        yesterday, last_week = (today - _dt.timedelta(days=1)).isoformat(), (today - _dt.timedelta(days=7)).isoformat()
+        base = {"category": "Tickets", "title": "Backdate check", "lead": ["bob"], "support": [], "startDate": (today - _dt.timedelta(days=30)).isoformat()}
+        tid = L.req("POST", "/api/teams/automation/tasks", dict(base, target=yesterday))[1]["id"]
+        t = self._task(M, tid)
+        # completing with today's date saves straight away
+        tid2 = L.req("POST", "/api/teams/automation/tasks", dict(base, title="Today done", target=yesterday))[1]["id"]
+        s, r, _ = M.req("PUT", "/api/tasks/%d" % tid2, dict(self._body(self._task(M, tid2)), actualDate=today.isoformat()))
+        self.assertEqual(r["pending"], [])
+        self.assertEqual(self._task(M, tid2)["status"], "Completed Late")
+        # a backdated completion waits; other details in the same save go through
+        s, r, _ = M.req("PUT", "/api/tasks/%d" % tid, dict(self._body(t), actualDate=last_week, progress="done last week", percent=100))
+        self.assertEqual((s, r["pending"]), (200, ["actual_date"]))
+        t = self._task(M, tid)
+        self.assertIsNone(t["actualDate"])
+        self.assertEqual(t["progress"], "done last week")
+        self.assertEqual(t["pendingFields"], ["actual_date"])
+        rq = next(x for x in L.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == tid)
+        self.assertEqual(rq["changes"], [["actual_date", None, last_week]])
+        self.assertEqual(rq["backdatedDays"], 7)
+        self.assertEqual(L.req("POST", "/api/requests/%d/approve" % rq["id"])[0], 200)
+        t = self._task(M, tid)
+        self.assertEqual((t["actualDate"], t["percent"], t["status"]), (last_week, 100, "Completed Early"))
+        # a member's new task entered as already completed in the past also waits
+        s, r, _ = M.req("POST", "/api/teams/automation/tasks", dict(base, title="Old job", target=last_week, actualDate=yesterday))
+        self.assertEqual(r["pending"], ["actual_date", "target"])
+        t = self._task(M, r["id"])
+        self.assertIsNone(t["actualDate"])
+        # leads may backdate directly
+        s, r, _ = L.req("PUT", "/api/tasks/%d" % tid2, dict(self._body(self._task(L, tid2)), actualDate=yesterday))
+        self.assertNotIn("pending", r)
+        self.assertEqual(self._task(L, tid2)["actualDate"], yesterday)
+
+    def test_administrators(self):
+        A = self.admin
+        users = {u["login"]: u for u in A.req("GET", "/api/admin/users")[1]["users"]}
+        self.assertEqual(self.lead.req("GET", "/api/admin/users")[0], 403)
+        self.assertEqual(self.lead.req("PUT", "/api/admin/users/%d" % users["bob"]["id"], {"isAdmin": True})[0], 403)
+        # make Alice an administrator: she now sees every team as admin
+        self.assertEqual(A.req("PUT", "/api/admin/users/%d" % users["alice"]["id"], {"isAdmin": True})[0], 200)
+        me = self.lead.req("GET", "/api/me")[1]
+        self.assertTrue(me["user"]["isAdmin"])
+        self.assertTrue(all(t["role"] == "admin" for t in me["teams"]))
+        self.assertEqual(A.req("PUT", "/api/admin/users/%d" % users["admin"]["id"], {"isAdmin": False})[0], 400)  # not yourself
+        # invite a brand-new administrator
+        url = A.req("POST", "/api/admin/invite")[1]["url"]
+        c = Client()
+        self.assertEqual(c.req("POST", "/api/invite/info", {"token": link_token(url)})[1]["kind"], "setup")
+        self.assertEqual(c.req("POST", "/api/invite/accept", {"token": link_token(url), "name": "Hew", "login": "hew", "password": "password-hew-1"})[0], 200)
+        self.assertTrue(c.req("GET", "/api/me")[1]["user"]["isAdmin"])
+        # back to normal for the other tests
+        self.assertEqual(A.req("PUT", "/api/admin/users/%d" % users["alice"]["id"], {"isAdmin": False})[0], 200)
+        self.assertFalse(self.lead.req("GET", "/api/me")[1]["user"]["isAdmin"])
+
     def test_support_engineer_is_read_only(self):
         tasks = self.member.req("GET", "/api/teams/automation/tasks")[1]["tasks"]
         t1 = next(t for t in tasks if t["no"] == 1)  # lead alice, support bob
@@ -334,16 +391,25 @@ class TrackerTest(unittest.TestCase):
         self.assertTrue(t3["canEdit"])
 
     def test_member_task_counts_in_kpi_and_proposal_can_be_withdrawn(self):
-        before = self.lead.req("GET", "/api/teams/automation/kpi?from=2026-01-01&to=2026-12-31")[1]["team"]["C"]
-        s, r, _ = self.member.req("POST", "/api/teams/automation/tasks", {"category": "Tickets", "title": "Done by member", "lead": ["bob"],
-                                                                         "target": "2026-02-01", "startDate": "2026-01-20", "actualDate": "2026-01-30"})
-        self.assertEqual(s, 200)
-        after = self.lead.req("GET", "/api/teams/automation/kpi?from=2026-01-01&to=2026-12-31")[1]["team"]["C"]
-        self.assertEqual(after, before + 1)
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
+        kpi = lambda: self.lead.req("GET", "/api/teams/automation/kpi?from=2026-01-01&to=2099-12-31")[1]["team"]["C"]
+        before = kpi()
+        # completed today: counts straight away (only the proposed target waits)
+        s, r, _ = self.member.req("POST", "/api/teams/automation/tasks", {"category": "Tickets", "title": "Done today", "lead": ["bob"],
+                                                                         "target": today, "startDate": "2026-01-20", "actualDate": today})
+        self.assertEqual((s, r["pending"]), (200, ["target"]))
+        self.assertEqual(kpi(), before + 1)
+        # completed in the past: waits for approval, so not counted yet
+        s, r2, _ = self.member.req("POST", "/api/teams/automation/tasks", {"category": "Tickets", "title": "Done in January", "lead": ["bob"],
+                                                                          "startDate": "2026-01-20", "actualDate": "2026-01-30"})
+        self.assertEqual(r2["pending"], ["actual_date"])
+        self.assertEqual(kpi(), before + 1)
+        # withdrawing a proposal keeps the task; only the proposed date goes
         rq = next(x for x in self.member.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == r["id"])
         self.assertEqual(self.member.req("DELETE", "/api/requests/%d" % rq["id"])[0], 200)
-        t = self._task(self.member, r["id"])            # the task stays; only the proposed date goes
-        self.assertEqual((t["effTarget"], t["changePending"]), (None, False))
+        t = self._task(self.member, r["id"])
+        self.assertEqual((t["effTarget"], t["changePending"], t["actualDate"]), (None, False, today))
 
     def test_teams_are_isolated_and_users_can_join_several(self):
         A = self.admin

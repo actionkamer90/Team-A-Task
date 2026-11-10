@@ -6,6 +6,8 @@ Run:   python app/server.py serve
 Admin: python app/server.py admin-link     (prints a one-time link to set or reset the admin password)
        python app/server.py backup FILE    (consistent copy of the database)
        python app/server.py import FILE    (create a team with its people and tasks from an import file)
+       python app/server.py make-admin LOGIN   (give an existing account administrator access)
+       python app/server.py invite-admin       (one-time link that creates a new administrator account)
 """
 import datetime as dt
 import hashlib
@@ -987,7 +989,8 @@ def task_out(t, role, my_key, uid, td, req=None):
            "requestedTarget": t["requested_target"], "target": t["target"], "effTarget": t["target"] or t["requested_target"],
            "pending": not t["target"] and bool(t["requested_target"]), "actualDate": t["actual_date"], "status": status_of(t, td),
            "archived": is_archived(t, td), "canEdit": can_edit(role, my_key, t), "approved": bool(t["approved"]),
-           "changePending": bool(req) and req["kind"] == "edit", "imported": bool(t["imported"]), "updatedAt": t["updated_at"]}
+           "changePending": bool(req) and req["kind"] == "edit", "imported": bool(t["imported"]), "updatedAt": t["updated_at"],
+           "pendingFields": sorted(k for k in json.loads(req["data"]) if k in ("target", "actual_date")) if req and req["kind"] == "edit" else []}
     if req and req["kind"] == "edit" and (req["by_user"] == uid or role in ("lead", "admin")):
         out["request"] = {"id": req["id"], "mine": req["by_user"] == uid, "data": json.loads(req["data"]), "at": req["at"]}
     return out
@@ -1084,6 +1087,13 @@ def api_task_create(h, tid):
     me = h.my_person(tid)
     if not lead and me["key"] not in d["lead"]:
         raise bad("Add yourself as a Lead Engineer. You can only manage tasks you lead.")
+    backdated = None
+    if not lead and d["actual_date"] and d["actual_date"] < today():
+        backdated, d["actual_date"] = d["actual_date"], None
+        try:
+            d["percent"] = max(0, min(100, int(h.body.get("percent") or 0)))
+        except (TypeError, ValueError):
+            d["percent"] = 0
     ts = now_iso()
     with Tx(h.con):
         no = (h.con.execute("SELECT MAX(no) FROM tasks WHERE team_id=?", (tid,)).fetchone()[0] or 0) + 1
@@ -1098,10 +1108,11 @@ def api_task_create(h, tid):
         log(h, task_id, "create", [])
         if lead and target:
             log(h, task_id, "target", {"from": None, "to": target})
-        if not lead and target:
+        proposal = {} if lead else {k: v for k, v in (("target", target), ("actual_date", backdated)) if v}
+        if proposal:
             h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
-                          (task_id, tid, "edit", json.dumps({"target": target}), h.user["id"], ts))
-    return {"id": task_id, "no": no, "pending": bool(not lead and target)}
+                          (task_id, tid, "edit", json.dumps(proposal), h.user["id"], ts))
+    return {"id": task_id, "no": no, "pending": sorted(proposal)}
 
 
 def get_task(h, task_id):
@@ -1138,33 +1149,51 @@ def api_task_update(h, task_id):
             if target and target != t["target"]:
                 set_target(h, t, target)
             return {"ok": True, "changed": True}
-        field_changes = [c for c in changes if c[0] != "target"]
-        target_changed = target != (t["target"] or t["requested_target"])
-        if target_changed:
-            if not target:
-                raise bad("Only your team lead can remove a target date.")
-            request_target(h, t, target)
+        proposal = member_proposal(h, t, d, target)
+        if proposal:
+            request_change(h, t, proposal)
+        field_changes = [c for c in diff_task(t, d, t["target"] or t["requested_target"]) if c[0] != "target"]
         if field_changes:
             write_fields(h, t["id"], d, h.user["id"])
             log(h, t["id"], "edit", field_changes)
-    return {"ok": True, "changed": True, "pending": target_changed}
+    return {"ok": True, "changed": True, "pending": sorted(proposal)}
 
 
-def request_target(h, t, target):
-    """A member proposes a target date: one pending proposal per task, replaced if the same person proposes again."""
+def member_proposal(h, t, d, target):
+    """Split out what a member may not change on their own: the target date, and a completion dated before today
+    (a backdated actual date). Those go to the team lead; everything else in d saves directly. Mutates d."""
+    proposal = {}
+    if target != (t["target"] or t["requested_target"]):
+        if not target:
+            raise bad("Only your team lead can remove a target date.")
+        proposal["target"] = target
+    new_actual = d["actual_date"]
+    if new_actual and new_actual != t["actual_date"] and new_actual < today():
+        proposal["actual_date"] = new_actual
+        d["actual_date"] = t["actual_date"]  # the task stays as it is until the lead approves
+        try:
+            d["percent"] = max(0, min(100, int(h.body.get("percent") or 0)))
+        except (TypeError, ValueError):
+            d["percent"] = t["percent"]
+    return proposal
+
+
+def request_change(h, t, proposal):
+    """One pending request per task, holding a proposed target and/or backdated completion date.
+    The same person proposing again updates it; someone else's pending request blocks a new one."""
     other = h.con.execute("SELECT r.*, u.display_name FROM change_requests r LEFT JOIN users u ON u.id=r.by_user "
                           "WHERE r.task_id=? AND r.status='pending' AND r.kind='edit'", (t["id"],)).fetchone()
     if other and other["by_user"] != h.user["id"]:
-        raise ApiError(409, "%s already proposed a new target date for this task. Ask your team lead to review it first."
+        raise ApiError(409, "%s already has a request waiting for the team lead on this task. Ask your team lead to review it first."
                        % (other["display_name"] or "Someone"))
-    data = json.dumps({"target": target})
     if other:
-        h.con.execute("UPDATE change_requests SET data=?, at=? WHERE id=?", (data, now_iso(), other["id"]))
+        data = dict(json.loads(other["data"]), **proposal)
+        h.con.execute("UPDATE change_requests SET data=?, at=? WHERE id=?", (json.dumps(data), now_iso(), other["id"]))
     else:
         h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
-                      (t["id"], t["team_id"], "edit", data, h.user["id"], now_iso()))
-    if not t["target"]:
-        h.con.execute("UPDATE tasks SET requested_target=? WHERE id=?", (target, t["id"]))
+                      (t["id"], t["team_id"], "edit", json.dumps(proposal), h.user["id"], now_iso()))
+    if "target" in proposal and not t["target"]:
+        h.con.execute("UPDATE tasks SET requested_target=? WHERE id=?", (proposal["target"], t["id"]))
 
 
 def drop_proposal(h, r):
@@ -1221,9 +1250,12 @@ def request_out(h, r, tasks_by_id):
     data = json.loads(r["data"])
     out = {"id": r["id"], "kind": r["kind"], "status": r["status"], "at": r["at"], "by": r["by_name"] or "Someone",
            "note": r["note"], "decidedBy": r["decided_name"], "decidedAt": r["decided_at"], "taskId": r["task_id"],
-           "no": t["no"] if t else data.get("no"), "title": t["title"] if t else data.get("title"), "proposedTarget": data.get("target")}
-    if r["kind"] == "edit" and t and r["status"] == "pending" and set(data) == {"target"}:
-        out["changes"] = [["target", t["target"], data["target"]]]  # official date -> proposed date
+           "no": t["no"] if t else data.get("no"), "title": t["title"] if t else data.get("title"),
+           "proposed": {k: v for k, v in data.items() if k in ("target", "actual_date")}}
+    if r["kind"] == "edit" and t and r["status"] == "pending" and set(data) <= {"target", "actual_date"}:
+        out["changes"] = [[k, t[k], data[k]] for k in ("target", "actual_date") if k in data]  # current -> proposed
+        if "actual_date" in data:
+            out["backdatedDays"] = (dt.date.fromisoformat(today()) - dt.date.fromisoformat(data["actual_date"])).days
     elif r["kind"] == "edit" and t and r["status"] == "pending":
         out["changes"] = diff_task(t, {k: v for k, v in data.items() if k != "target"}, data.get("target"))
     elif r["kind"] == "edit":
@@ -1270,7 +1302,20 @@ def api_request_approve(h, rid):
             if t["requested_target"] and not t["target"]:
                 set_target(h, t, t["requested_target"])
             applied = []
-        else:
+        elif set(json.loads(r["data"])) <= {"target", "actual_date"}:
+            data = json.loads(r["data"])
+            applied = []
+            if data.get("actual_date") and data["actual_date"] != t["actual_date"]:
+                ch = [["actual_date", t["actual_date"], data["actual_date"]]] + ([["percent", t["percent"], 100]] if t["percent"] != 100 else [])
+                write_fields(h, t["id"], {"actual_date": data["actual_date"], "percent": 100}, r["by_user"])
+                log(h, t["id"], "edit", ch, user_id=r["by_user"])
+                applied += ch
+            if data.get("target") and data["target"] != t["target"]:
+                set_target(h, t, data["target"])
+                applied.append(["target", t["target"], data["target"]])
+            log(h, t["id"], "approve", {"request": "edit", "of": r["by_user"]})
+            h.con.execute("UPDATE change_requests SET data=? WHERE id=?", (json.dumps(dict(data, _applied=applied)), r["id"]))
+        else:  # older requests that carried a whole task
             data = json.loads(r["data"])
             target = data.pop("target", None)
             applied = diff_task(t, data, target) if data else [["target", t["target"], target]]
@@ -1390,6 +1435,44 @@ def api_admin_teams(h):
     return {"teams": out}
 
 
+# ---------------------------------------------------------------- admin: administrators
+@route("GET", "/api/admin/users")
+def api_admin_users(h):
+    if not h.need_user()["is_admin"]:
+        raise FORBIDDEN
+    teams = {}
+    for r in h.con.execute("SELECT p.user_id, t.name, p.role FROM people p JOIN teams t ON t.id=p.team_id WHERE p.active=1 AND p.user_id IS NOT NULL"):
+        teams.setdefault(r["user_id"], []).append("%s (%s)" % (r["name"], "lead" if r["role"] == "lead" else "member"))
+    return {"users": [{"id": u["id"], "login": u["login"], "name": u["display_name"], "isAdmin": bool(u["is_admin"]),
+                       "isMe": u["id"] == h.user["id"], "teams": teams.get(u["id"], [])}
+                      for u in h.con.execute("SELECT * FROM users WHERE disabled=0 ORDER BY is_admin DESC, display_name COLLATE NOCASE")]}
+
+
+@route("PUT", "/api/admin/users/([0-9]+)")
+def api_admin_user_update(h, uid):
+    if not h.need_user()["is_admin"]:
+        raise FORBIDDEN
+    uid = int(uid)
+    want = 1 if h.body.get("isAdmin") else 0
+    if uid == h.user["id"] and not want:
+        raise bad("You can't remove your own administrator access. Ask another administrator.")
+    with Tx(h.con):
+        if not h.con.execute("SELECT 1 FROM users WHERE id=? AND disabled=0", (uid,)).fetchone():
+            raise NOT_FOUND
+        h.con.execute("UPDATE users SET is_admin=? WHERE id=?", (want, uid))
+    return {"ok": True}
+
+
+@route("POST", "/api/admin/invite")
+def api_admin_invite(h):
+    """A one-time link that creates a new administrator account (for someone not yet using the tracker)."""
+    if not h.need_user()["is_admin"]:
+        raise FORBIDDEN
+    with Tx(h.con):
+        tok, exp = make_link(h, "setup", created_by=h.user["id"])
+    return {"url": "%s/#invite=%s" % (h.base_url(), tok), "expires": exp}
+
+
 # ---------------------------------------------------------------- CLI
 def admin_link():
     init_db()
@@ -1492,6 +1575,24 @@ if __name__ == "__main__":
         print("New people added: %s" % (rep["new_people"] or "none"))
         if a.dry_run:
             print("Dry run: nothing was saved.")
+    elif cmd == "make-admin" and len(sys.argv) == 3:
+        init_db()
+        con = connect()
+        with Tx(con):
+            n = con.execute("UPDATE users SET is_admin=1 WHERE login=? AND disabled=0", (sys.argv[2].lower(),)).rowcount
+        print("'%s' is now an administrator." % sys.argv[2] if n else "No account uses the login '%s'." % sys.argv[2])
+    elif cmd == "invite-admin":
+        init_db()
+        con = connect()
+
+        class _H:
+            pass
+        hh = _H()
+        hh.con = con
+        with Tx(con):
+            tok, exp = make_link(hh, "setup")
+        base = BASE_URL or "http://<this-server>:%s" % os.environ.get("TT_PORT", "8080")
+        print("Send this one-time link to the new administrator (valid %d days):\n\n  %s/#invite=%s\n" % (INVITE_DAYS, base, tok))
     elif cmd == "import" and len(sys.argv) == 3:
         init_db()
         with open(sys.argv[2], encoding="utf-8") as f:
