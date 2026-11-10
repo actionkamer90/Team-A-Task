@@ -27,11 +27,21 @@ function toast(msg) {
   clearTimeout(toastT); toastT = setTimeout(() => t.remove(), 4000);
 }
 
+// When the tracker is updated on the server, tabs that were already open offer a reload instead of running old code.
+let loadedVersion = null;
+function checkVersion(v) {
+  if (!v) return;
+  if (!loadedVersion) { loadedVersion = v; return; }
+  if (v === loadedVersion || document.querySelector(".update-bar")) return;
+  document.body.prepend(h("div", { class: "update-bar", role: "status" }, "The tracker has been updated. ",
+    h("button", { class: "btn small primary", text: "Reload to get the new version", onclick: () => location.reload() })));
+}
 async function api(method, path, body) {
   const opt = { method, credentials: "same-origin", headers: {} };
   if (method !== "GET") { opt.headers["Content-Type"] = "application/json"; opt.headers["X-Requested-With"] = "tt"; opt.body = JSON.stringify(body || {}); }
   let r;
   try { r = await fetch(path, opt); } catch { throw new Error("Can't reach the server. Check your connection."); }
+  checkVersion(r.headers.get("X-App-Version"));
   let data = {};
   try { data = await r.json(); } catch { }
   if (!r.ok) {

@@ -39,6 +39,17 @@ INVITE_DAYS = 7
 MIN_PASSWORD = 10
 STATIC = os.path.join(HERE, "static")
 
+
+def _app_version():
+    h = hashlib.sha256()
+    for name in sorted(os.listdir(STATIC)):
+        with open(os.path.join(STATIC, name), "rb") as f:
+            h.update(f.read())
+    return h.hexdigest()[:12]
+
+
+APP_VERSION = _app_version()
+
 URGENCIES = ["Low", "Medium", "High", "Critical"]
 DEFAULT_CATS = ["Pre-Sales", "Project", "Tickets", "Internal"]
 DEFAULT_KPI = {"onTime": 0.8, "early": 0.2, "excellent": 0.9, "good": 0.7, "needs": 0.6}
@@ -430,6 +441,7 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in SEC_HEADERS.items():
             self.send_header(k, v)
         self.send_header("Content-Type", ctype)
+        self.send_header("X-App-Version", APP_VERSION)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         for k, v in (extra or []):
@@ -617,7 +629,9 @@ def api_me(h):
         return {"user": None, "setupNeeded": not has_admin}
     u = h.user
     if u["is_admin"]:
-        teams = h.con.execute("SELECT id,name FROM teams ORDER BY name").fetchall()
+        # teams the admin is also a member of come first, so they open on their own team
+        teams = h.con.execute("SELECT t.id, t.name FROM teams t ORDER BY EXISTS(SELECT 1 FROM people p WHERE p.team_id=t.id "
+                              "AND p.user_id=? AND p.active=1) DESC, t.name", (u["id"],)).fetchall()
         roles = {t["id"]: "admin" for t in teams}
     else:
         teams = h.con.execute("SELECT t.id,t.name,p.role FROM people p JOIN teams t ON t.id=p.team_id "

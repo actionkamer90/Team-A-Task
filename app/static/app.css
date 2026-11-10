@@ -135,3 +135,4 @@ tr.total td{font-weight:600;background:var(--surface-2)}
 .w160{max-width:160px} .w50{max-width:50%} .w200{width:200px;max-width:100%}
 .small{font-size:12px} .m0{margin:0} .bad-text{color:var(--bad)} .warn-text{color:var(--warn)}
 @media (prefers-reduced-motion:no-preference){.sheet{animation:slide .18s ease-out}@keyframes slide{from{transform:translateX(24px);opacity:.6}}}
+.update-bar{position:sticky;top:0;z-index:30;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;padding:8px 16px;background:var(--warn-soft);color:var(--warn);font-weight:500;border-bottom:1px solid var(--line)}
