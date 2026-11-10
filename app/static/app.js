@@ -79,16 +79,16 @@ async function loadMe() {
 async function selectTeam(id) {
   S.teamId = id; store.set("tt.team", id); S.kpiData = null;
   const [t, tk] = await Promise.all([api("GET", "/api/teams/" + id), api("GET", "/api/teams/" + id + "/tasks")]);
-  S.team = t; S.tasks = tk.tasks; S.today = tk.today; S.phase = "ready";
+  S.team = t; S.tasks = tk.tasks; S.today = tk.today; S.pendingApprovals = tk.pendingApprovals; S.phase = "ready";
   render();
 }
 async function reloadTeam() {
   if (!S.teamId) return;
   try {
     const [t, tk] = await Promise.all([api("GET", "/api/teams/" + S.teamId), api("GET", "/api/teams/" + S.teamId + "/tasks")]);
-    const roleChanged = t.role !== S.team?.role;
-    S.team = t; S.tasks = tk.tasks; S.today = tk.today;
-    if (roleChanged) render(); else refresh();
+    const shellChanged = t.role !== S.team?.role || tk.pendingApprovals !== S.pendingApprovals;
+    S.team = t; S.tasks = tk.tasks; S.today = tk.today; S.pendingApprovals = tk.pendingApprovals;
+    if (shellChanged) render(); else refresh();
   } catch (e) { if (e.status === 403) loadMe(); }
 }
 setInterval(() => { if (S.phase === "ready" && document.visibilityState === "visible" && !document.querySelector(".sheet")) reloadTeam(); }, 30000);
@@ -96,7 +96,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 
 /* ---------- shell ---------- */
 const VIEWS = [["tracker", "Tracker", () => true], ["completed", "Archive", () => true], ["summary", "Summary", () => true],
-  ["kpi", "KPI Dashboard", () => isLead()], ["team", "Team & Invites", () => isLead()], ["admin", "All Teams", () => S.me?.user?.isAdmin]];
+  ["approvals", "Approvals", () => isLead()], ["requests", "My Requests", () => !isLead() && !!myKey()], ["kpi", "KPI Dashboard", () => isLead()], ["team", "Team & Invites", () => isLead()], ["admin", "All Teams", () => S.me?.user?.isAdmin]];
 let refreshFn = null;
 function refresh() { if (refreshFn) refreshFn(); }
 function render() {
@@ -126,11 +126,11 @@ function render() {
         h("span", { class: "avatar", text: (u.name || u.login).slice(0, 1).toUpperCase() }), h("span", { text: u.name || u.login }),
         h("span", { class: "role", text: r === "admin" ? "Admin" : r === "lead" ? "Team lead" : "Member" }))),
     h("nav", { class: "tabs wrap", role: "tablist" }, VIEWS.filter(v => v[2]()).map(([id, label]) => h("button", {
-      role: "tab", "aria-selected": String(S.view === id), text: label,
+      role: "tab", "aria-selected": String(S.view === id), text: id === "approvals" && S.pendingApprovals ? label + " (" + S.pendingApprovals + ")" : label,
       onclick: () => { S.view = id; store.set("tt.view", id); render(); }
     })))));
   const main = h("main", { class: "wrap" }); app.append(main);
-  ({ tracker: viewTracker, completed: viewCompleted, summary: viewSummary, kpi: viewKPI, team: viewTeam, admin: viewAdmin })[S.view](main);
+  ({ tracker: viewTracker, completed: viewCompleted, approvals: viewApprovals, requests: viewRequests, summary: viewSummary, kpi: viewKPI, team: viewTeam, admin: viewAdmin })[S.view](main);
   refresh();
 }
 function card(title, body) { return h("div", { class: "center" }, h("div", { class: "card" }, h("h2", { text: title }), body)); }
@@ -197,7 +197,21 @@ function inviteForm(info) {
         ev.target.disabled = true;
         try { await api("POST", "/api/invite/accept", { token: S.invite.token, useCurrent: true }); await done(); } catch (x) { err.textContent = x.message; ev.target.disabled = false; }
       } })));
-  } else if (kind === "invite") body.push(h("p", { class: "muted small m0", text: "Already have an account for another team? Log in first, then open this link again to add this team to it." }));
+  } else if (kind === "invite") {
+    const exLogin = h("input", { type: "text", id: "ex-login", autocomplete: "username" });
+    const exPw = h("input", { type: "password", id: "ex-pw", autocomplete: "current-password" });
+    const exErr = h("p", { class: "bad-text m0", role: "alert" });
+    const exForm = h("form", { hidden: true, onsubmit: async e => {
+      e.preventDefault(); exErr.textContent = "";
+      try { await api("POST", "/api/invite/accept", { token: S.invite.token, existingLogin: exLogin.value, existingPassword: exPw.value }); await done(); }
+      catch (x) { exErr.textContent = x.message; }
+    } }, h("label", { class: "field" }, h("span", { text: "Your existing login" }), exLogin), h("label", { class: "field" }, h("span", { text: "Password" }), exPw), exErr,
+      h("button", { class: "btn primary block", type: "submit", text: "Add " + info.team + " to my account" }));
+    const toggle = h("button", { class: "btn small", type: "button", text: "I already have an account", onclick: () => {
+      const show = exForm.hidden; exForm.hidden = !show; form.hidden = show; toggle.textContent = show ? "Create a new account instead" : "I already have an account";
+    } });
+    body.push(h("div", { class: "row between" }, h("span", { class: "muted small", text: "Already use the tracker for another team?" }), toggle), exForm);
+  }
   body.push(form);
   return card(title, body);
 }
@@ -260,7 +274,8 @@ function taskTable(list, archive) {
       h("td", { class: "mono nowrap", text: fmt(t.startDate) }),
       h("td", { class: "mono nowrap" }, fmt(t.effTarget), t.pending ? h("span", { class: "pending", text: "awaiting lead" }) : null),
       h("td", { class: "mono nowrap", text: fmt(t.actualDate) }),
-      h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status })))))));
+      h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status }),
+        !t.approved ? h("span", { class: "pending", text: "new · awaiting approval" }) : t.changePending ? h("span", { class: "pending", text: "changes awaiting approval" }) : null))))));
 }
 function tile(label, val, cls) { return h("div", { class: "tile " + (cls || "") }, h("span", { class: "lbl", text: label }), h("b", { text: val })); }
 function exportBtn() {
@@ -278,7 +293,7 @@ function viewTracker(main) {
   refreshFn = () => {
     const cur = S.tasks.filter(t => !t.archived), open = cur.filter(t => !t.actualDate), c = s => open.filter(t => t.status === s).length;
     tiles.replaceChildren(tile("Open tasks", open.length), tile("On-going", c("On-Going"), "info"), tile("Delayed", c("Delay"), "bad"),
-      tile("Awaiting target approval", open.filter(t => t.pending).length, "warn"), tile("No target date", c("No Target"), "warn"));
+      tile("Awaiting approval", cur.filter(t => !t.approved || t.changePending).length, "warn"), tile("No target date", c("No Target"), "warn"));
     const order = { "Delay": 0, "On-Going": 1, "No Target": 2 };
     const list = applyFilters(cur).sort((a, b) => ((order[a.status] ?? 3) - (order[b.status] ?? 3)) || ((a.effTarget || "9") < (b.effTarget || "9") ? -1 : 1));
     body.replaceChildren(taskTable(list, false));
@@ -324,30 +339,43 @@ function peopleToggles(id, selected, disabled) {
   return wrap;
 }
 function taskSheet(t) {
-  const tm = team(), isNew = !t, lead = isLead(), ro = t ? !t.canEdit : false;
-  const T = t || { category: "", title: "", progress: "", percent: 0, urgency: "Medium", customer: "", lead: myKey() ? [myKey()] : [], support: [], startDate: S.today, requestedTarget: "", target: "", actualDate: "" };
-  const fCat = h("select", { id: "t-cat", disabled: ro }, h("option", { value: "", text: "Choose…" }), tm.categories.map(c => h("option", { value: c, text: c })));
+  const tm = team(), isNew = !t, lead = isLead(), mk = myKey();
+  const ro = t ? !t.canEdit : !(lead || mk);
+  const myReq = t?.request?.mine ? t.request : null;
+  const othersPending = t && t.changePending && !myReq;
+  const needsApproval = !lead;
+  // a member who already sent changes sees (and can revise) their proposal instead of the current values
+  const src = myReq ? { ...t, ...myReq.data, startDate: myReq.data.start_date, actualDate: myReq.data.actual_date, effTarget: myReq.data.target } : t;
+  const T = src || { category: "", title: "", progress: "", percent: 0, urgency: "Medium", customer: "", lead: mk ? [mk] : [], support: [], startDate: S.today, effTarget: "", actualDate: "" };
+  const locked = ro || (othersPending && !lead);
+  const fCat = h("select", { id: "t-cat", disabled: locked }, h("option", { value: "", text: "Choose…" }), tm.categories.map(c => h("option", { value: c, text: c })));
   fCat.value = T.category || "";
-  const fTitle = h("input", { type: "text", id: "t-title", value: T.title, disabled: ro, maxlength: "200", placeholder: "e.g. Quarterly health check" });
-  const fCust = h("input", { type: "text", id: "t-cust", value: T.customer || "", disabled: ro, list: "cust-list", maxlength: "100" });
+  const fTitle = h("input", { type: "text", id: "t-title", value: T.title, disabled: locked, maxlength: "200", placeholder: "e.g. Quarterly health check" });
+  const fCust = h("input", { type: "text", id: "t-cust", value: T.customer || "", disabled: locked, list: "cust-list", maxlength: "100" });
   const dl = h("datalist", { id: "cust-list" }, tm.customers.map(c => h("option", { value: c })));
-  const fUrg = h("select", { id: "t-urg", disabled: ro }, tm.urgencies.map(u => h("option", { value: u, text: u }))); fUrg.value = T.urgency;
-  const fPct = h("input", { type: "number", id: "t-pct", min: "0", max: "100", step: "5", value: String(T.percent || 0), disabled: ro });
-  const fProg = h("textarea", { id: "t-prog", disabled: ro, maxlength: "8000", placeholder: "Latest progress, one update per line" }); fProg.value = T.progress || "";
-  const addNote = h("button", { type: "button", class: "btn small", disabled: ro, text: "Add dated update", onclick: () => {
+  const fUrg = h("select", { id: "t-urg", disabled: locked }, tm.urgencies.map(u => h("option", { value: u, text: u }))); fUrg.value = T.urgency;
+  const fPct = h("input", { type: "number", id: "t-pct", min: "0", max: "100", step: "5", value: String(T.percent || 0), disabled: locked });
+  const fProg = h("textarea", { id: "t-prog", disabled: locked, maxlength: "8000", placeholder: "Latest progress, one update per line" }); fProg.value = T.progress || "";
+  const addNote = h("button", { type: "button", class: "btn small", disabled: locked, text: "Add dated update", onclick: () => {
     const d = S.today; fProg.value = d.slice(8, 10) + "/" + d.slice(5, 7) + ": \n" + fProg.value; fProg.focus(); fProg.setSelectionRange(7, 7);
   } });
-  const fLead = peopleToggles("t-lead", T.lead, ro), fSup = peopleToggles("t-sup", T.support, ro);
-  const fStart = h("input", { type: "date", id: "t-start", value: T.startDate || "", disabled: ro });
-  const fActual = h("input", { type: "date", id: "t-actual", value: T.actualDate || "", max: S.today, disabled: ro });
-  const official = T.target || "";
-  const fTarget = h("input", { type: "date", id: "t-target", value: official || T.requestedTarget || "", disabled: ro || (!lead && !!official) });
-  const help = lead ? (official ? "Official target. Changes are logged." : T.requestedTarget ? "Requested by the engineer. Saving confirms it as the official target." : "Set the official target date.")
-    : (official ? "Set by your team lead. Only a team lead can change it." : "Your proposed target. Your team lead confirms or changes it.");
+  const fLead = peopleToggles("t-lead", T.lead, locked), fSup = peopleToggles("t-sup", T.support, locked);
+  const fStart = h("input", { type: "date", id: "t-start", value: T.startDate || "", disabled: locked });
+  const fActual = h("input", { type: "date", id: "t-actual", value: T.actualDate || "", max: S.today, disabled: locked });
+  const fTarget = h("input", { type: "date", id: "t-target", value: T.effTarget || "", disabled: locked });
+  const help = lead ? "Saving sets the official target date. Changes are logged."
+    : t?.target ? "Official target set by your team lead. A new date needs their approval." : "Your proposed target. Your team lead approves it.";
+  const banners = [];
+  if (ro) banners.push(h("div", { class: "note", text: "You can view this task. Only its Lead Engineer and the team lead can change it." }));
+  if (t && !t.approved) banners.push(h("div", { class: "note warn", text: lead ? "New task waiting for approval. Review it on the Approvals tab." : "This new task is waiting for your team lead's approval. You can still adjust it." }));
+  if (myReq) banners.push(h("div", { class: "note warn", text: "Your changes from " + fmtDT(myReq.at) + " are waiting for your team lead. The form shows what you sent; saving again replaces it." }));
+  if (othersPending && !lead) banners.push(h("div", { class: "note warn", text: "Another engineer's changes to this task are waiting for the team lead. You can edit it again once they're reviewed." }));
+  if (lead && t?.request) banners.push(h("div", { class: "note warn" }, "An engineer proposed changes to this task. ",
+    h("button", { class: "btn small", type: "button", text: "Review in Approvals", onclick: () => { closeSheet(); S.view = "approvals"; render(); } })));
+  if (!isNew && needsApproval && !ro && t.approved && !othersPending && !myReq) banners.push(h("p", { class: "muted small m0", text: "Your changes go to your team lead for approval before they show for everyone." }));
   const hist = h("div", { class: "hist" });
   if (t) loadHistory(t, hist);
-  const body = [dl,
-    ro ? h("div", { class: "note", text: "You can view this task. Only its lead, support engineers and the team lead can change it." }) : null,
+  const body = [dl, ...banners,
     h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Category" }), fCat), h("label", { class: "field" }, h("span", { text: "Urgency" }), fUrg)),
     h("label", { class: "field" }, h("span", { text: "Main task / project" }), fTitle),
     h("label", { class: "field" }, h("span", { text: "Customer" }), fCust),
@@ -360,20 +388,23 @@ function taskSheet(t) {
     h("label", { class: "field w50" }, h("span", { text: "Actual (completed) date" }), fActual),
     t ? h("p", { class: "muted small m0", text: "Status: " + t.status + (t.updatedAt ? " · last updated " + fmtDT(t.updatedAt) : "") }) : null,
     hist];
-  const save = h("button", { class: "btn primary", text: isNew ? "Add task" : "Save changes", disabled: ro, onclick: async () => {
+  const saveLabel = lead ? (isNew ? "Add task" : "Save changes") : (isNew ? "Send for approval" : (t && !t.approved ? "Save changes" : "Send for approval"));
+  const save = h("button", { class: "btn primary", text: saveLabel, disabled: locked, onclick: async () => {
     if (!fTitle.value.trim()) { toast("Give the task a name."); return fTitle.focus(); }
     if (!fCat.value) { toast("Choose a category."); return fCat.focus(); }
+    const leads = fLead.value();
+    if (!leads.length) return toast("Choose at least one Lead Engineer.");
+    if (!lead && !leads.includes(mk)) return toast("Keep yourself as a Lead Engineer. You can only manage tasks you lead.");
     const data = { category: fCat.value, title: fTitle.value, customer: fCust.value, urgency: fUrg.value, percent: Number(fPct.value) || 0, progress: fProg.value,
-      lead: fLead.value(), support: fSup.value(), startDate: fStart.value || null, actualDate: fActual.value || null };
+      lead: leads, support: fSup.value(), startDate: fStart.value || null, actualDate: fActual.value || null, target: fTarget.value || null };
     save.disabled = true;
     try {
-      if (isNew) { data.target = fTarget.value || null; await api("POST", "/api/teams/" + S.teamId + "/tasks", data); }
-      else {
-        if (!official) data.requestedTarget = lead ? (T.requestedTarget || null) : (fTarget.value || null);
-        await api("PUT", "/api/tasks/" + t.id, data);
-        if (lead && fTarget.value && fTarget.value !== official) await api("PUT", "/api/tasks/" + t.id + "/target", { target: fTarget.value });
-      }
-      closeSheet(); toast(isNew ? "Task added" : "Changes saved"); reloadTeam();
+      const r = isNew ? await api("POST", "/api/teams/" + S.teamId + "/tasks", data) : await api("PUT", "/api/tasks/" + t.id, data);
+      closeSheet();
+      if (r.changed === false) toast("No changes to save");
+      else if (r.pending && (isNew || t.approved)) toast("Sent to your team lead for approval");
+      else toast(isNew ? "Task added" : "Changes saved");
+      reloadTeam();
     } catch (e) { save.disabled = false; toast(e.message); }
   } });
   const foot = [save, h("button", { class: "btn", text: "Cancel", onclick: closeSheet })];
@@ -388,7 +419,7 @@ function taskSheet(t) {
   openSheet(isNew ? "New task" : "Task #" + String(t.no).padStart(3, "0"), body, foot);
 }
 const LOG_LABEL = { category: "Category", title: "Main task", customer: "Customer", urgency: "Urgency", percent: "Task percentage", lead: "Lead engineer",
-  support: "Support engineer", start_date: "Start date", requested_target: "Requested target", actual_date: "Actual date" };
+  support: "Support engineer", start_date: "Start date", requested_target: "Requested target", actual_date: "Actual date", target: "Target date" };
 function describe(f, v) {
   if (v == null || v === "" || (Array.isArray(v) && !v.length)) return "(empty)";
   if (Array.isArray(v)) return v.map(personName).join(" / ");
@@ -405,12 +436,89 @@ async function loadHistory(t, box) {
     r.entries.forEach(e => {
       let lines;
       if (e.kind === "create") lines = [h("div", { text: "Created the task" })];
+      else if (e.kind === "approve") lines = [h("div", { class: "tgt", text: e.changes.request === "create" ? "Approved the new task from " + e.changes.of : "Approved " + e.changes.of + "'s changes" })];
+      else if (e.kind === "reject") lines = [h("div", { class: "tgt", text: "Rejected " + e.changes.of + "'s changes" + (e.changes.note ? ": " + e.changes.note : "") })];
       else if (e.kind === "target") lines = [h("div", { class: "tgt", text: e.changes.from ? "Changed the official target: " + fmt(e.changes.from) + " → " + fmt(e.changes.to) : "Set the official target: " + fmt(e.changes.to) })];
       else lines = e.changes.map(([f, a, b]) => h("div", { text: f === "progress" ? "Updated the progress notes" : (LOG_LABEL[f] || f) + ": " + describe(f, a) + " → " + describe(f, b) }));
       box.append(h("div", { class: "ev" }, h("div", {}, h("b", { text: e.by }), h("span", { class: "mono", text: "  ·  " + fmtDT(e.at) })), lines));
     });
     if (r.imported && r.entries.length) box.append(h("span", { text: "Imported from the Excel workbook before these changes." }));
   } catch (e) { box.replaceChildren(h("span", { text: "Change history couldn't be loaded." })); }
+}
+
+
+/* ---------- approvals (leads) and my requests (members) ---------- */
+function changeLines(changes) {
+  return (changes || []).map(([f, a, b]) => h("div", { text: f === "progress" ? "Updated the progress notes" : (LOG_LABEL[f] || f) + ": " + describe(f, a) + " → " + describe(f, b) }));
+}
+function requestTitle(r) { return "#" + String(r.no || "").padStart(3, "0") + " " + (r.title || "(deleted task)"); }
+function viewApprovals(main) {
+  const list = h("div", { class: "grid2" });
+  main.append(h("div", { class: "row between" }, h("h2", { text: team().name + " · approvals" }),
+    h("span", { class: "muted", text: "Engineers' new tasks and changes wait here until you approve them." })), list);
+  async function load() {
+    try {
+      const r = await api("GET", "/api/teams/" + S.teamId + "/requests");
+      if (!r.requests.length) { list.replaceChildren(h("div", { class: "panel" }, h("p", { class: "muted m0", text: "Nothing waiting. New requests appear here when engineers add or change tasks." }))); return; }
+      list.replaceChildren(...r.requests.map(rq => {
+        const note = h("input", { type: "text", id: "rej-" + rq.id, maxlength: "500", placeholder: "Reason (shown to " + rq.by + ")" });
+        const rejectRow = h("div", { class: "row", hidden: true }, note,
+          h("button", { class: "btn danger small", text: "Reject", onclick: () => decide(rq, "reject", note.value) }));
+        const detail = rq.kind === "create"
+          ? [h("div", { text: "New task · " + rq.task.category + " · " + rq.task.urgency + (rq.task.customer ? " · " + rq.task.customer : "") }),
+             h("div", { text: "Lead: " + (rq.task.lead.map(personName).join(" / ") || "—") + (rq.task.support.length ? " · Support: " + rq.task.support.map(personName).join(" / ") : "") }),
+             h("div", { text: "Start " + fmt(rq.task.startDate) + " · Proposed target " + fmt(rq.task.target) }),
+             rq.task.progress ? h("div", { class: "muted", text: rq.task.progress }) : null]
+          : changeLines(rq.changes);
+        return h("div", { class: "panel" },
+          h("div", { class: "row between" }, h("h3", { text: requestTitle(rq) }), h("span", { class: "pill " + (rq.kind === "create" ? "info" : "warn"), text: rq.kind === "create" ? "New task" : "Changes" })),
+          h("div", { class: "muted small", text: rq.by + " · " + fmtDT(rq.at) }),
+          h("div", { class: "hist" }, detail),
+          h("div", { class: "row" },
+            h("button", { class: "btn primary", text: "Approve", onclick: () => decide(rq, "approve") }),
+            h("button", { class: "btn", text: "Reject…", onclick: e => { rejectRow.hidden = false; e.target.hidden = true; note.focus(); } }),
+            rq.taskId && rq.kind === "edit" ? h("button", { class: "btn small", text: "Open task", onclick: () => { const t = S.tasks.find(x => x.id === rq.taskId); if (t) taskSheet(t); } }) : null),
+          rejectRow);
+      }));
+    } catch (e) { list.replaceChildren(h("p", { class: "bad-text", text: e.message })); }
+  }
+  async function decide(rq, what, note) {
+    try {
+      await api("POST", "/api/requests/" + rq.id + "/" + what, what === "reject" ? { note: note || "" } : {});
+      toast(what === "approve" ? "Approved: " + requestTitle(rq) : "Rejected: " + requestTitle(rq));
+      await reloadTeam(); load();
+    } catch (e) { toast(e.message); load(); }
+  }
+  refreshFn = null;
+  load();
+}
+const REQ_STATUS = { pending: ["Waiting for approval", "warn"], approved: ["Approved", "ok"], rejected: ["Rejected", "bad"], cancelled: ["Withdrawn", ""] };
+function viewRequests(main) {
+  const list = h("div");
+  main.append(h("div", { class: "row between" }, h("h2", { text: team().name + " · my requests" }),
+    h("span", { class: "muted", text: "Your new tasks and changes, and what your team lead decided (last 30 days)." })), list);
+  async function load() {
+    try {
+      const r = await api("GET", "/api/teams/" + S.teamId + "/requests");
+      if (!r.requests.length) { list.replaceChildren(h("div", { class: "panel" }, h("p", { class: "muted m0", text: "No requests in the last 30 days." }))); return; }
+      list.replaceChildren(h("div", { class: "tscroll" }, h("table", {},
+        h("thead", {}, h("tr", {}, ["Task", "Request", "Sent", "Status", "Team lead's note", ""].map(c => h("th", { text: c })))),
+        h("tbody", {}, r.requests.map(rq => {
+          const [label, cls] = REQ_STATUS[rq.status] || [rq.status, ""];
+          return h("tr", {},
+            h("td", {}, h("div", { class: "task-title", text: requestTitle(rq) }), rq.kind === "edit" ? h("div", { class: "hist" }, changeLines(rq.changes)) : null),
+            h("td", { text: rq.kind === "create" ? "New task" : "Changes" }),
+            h("td", { class: "mono nowrap", text: fmtDT(rq.at) }),
+            h("td", {}, h("span", { class: "pill " + cls, text: label }), rq.decidedBy ? h("div", { class: "muted small", text: rq.decidedBy + " · " + fmtDT(rq.decidedAt) }) : null),
+            h("td", { text: rq.note || "" }),
+            h("td", {}, rq.status === "pending" ? h("button", { class: "btn small", text: "Withdraw", onclick: async () => {
+              try { await api("DELETE", "/api/requests/" + rq.id); toast("Request withdrawn"); await reloadTeam(); load(); } catch (e) { toast(e.message); }
+            } }) : null));
+        })))));
+    } catch (e) { list.replaceChildren(h("p", { class: "bad-text", text: e.message })); }
+  }
+  refreshFn = null;
+  load();
 }
 
 /* ---------- summary ---------- */
@@ -551,11 +659,14 @@ function personSheet(p) {
   const fName = h("input", { type: "text", id: "p-name", value: p?.name || "", maxlength: "60", placeholder: "Name shown on tasks, e.g. Sarah" });
   const fRole = h("select", { id: "p-role", disabled: !admin }, h("option", { value: "member", text: "Member: adds and updates tasks" }), h("option", { value: "lead", text: "Team lead: also sets target dates and sees KPIs" }));
   fRole.value = p?.role || "member";
+  const fLogin = h("input", { type: "text", id: "p-login", maxlength: "120", autocomplete: "off", placeholder: "Only if they already use the tracker" });
   const foot = [h("button", { class: "btn primary", text: isNew ? "Add person" : "Save", onclick: async () => {
     if (!fName.value.trim()) { toast("Enter a name."); return fName.focus(); }
     try {
-      if (isNew) await api("POST", "/api/teams/" + S.teamId + "/people", { name: fName.value, role: fRole.value });
-      else await api("PUT", "/api/teams/" + S.teamId + "/people/" + p.id, { name: fName.value, role: fRole.value, active: true });
+      if (isNew) {
+        const r = await api("POST", "/api/teams/" + S.teamId + "/people", { name: fName.value, role: fRole.value, login: fLogin.value });
+        closeSheet(); toast(r.joined ? "Added. They'll see this team next time they open the tracker." : "Added. Next, create their invite link."); reloadTeam(); return;
+      } else await api("PUT", "/api/teams/" + S.teamId + "/people/" + p.id, { name: fName.value, role: fRole.value, active: true });
       closeSheet(); toast(isNew ? "Added. Next, create their invite link." : "Saved"); reloadTeam();
     } catch (e) { toast(e.message); }
   } }), h("button", { class: "btn", text: "Cancel", onclick: closeSheet })];
@@ -565,6 +676,8 @@ function personSheet(p) {
   openSheet(isNew ? "Add person" : "Edit " + p.name, [
     h("label", { class: "field" }, h("span", { text: "Display name" }), fName),
     h("label", { class: "field" }, h("span", { text: "Role" }), fRole, admin ? null : h("small", { class: "muted", text: "Only the administrator can make someone a team lead." })),
+    isNew ? h("label", { class: "field" }, h("span", { text: "Existing login (optional)" }), fLogin,
+      h("small", { class: "muted", text: "If this person already has a tracker account for another team, enter their login to add them straight away. Otherwise leave it empty and send an invite link." })) : null,
     p && !p.active ? h("div", { class: "note", text: "This person was removed. Saving adds them back to the team." }) : null], foot);
 }
 function teamSheet(tm) {

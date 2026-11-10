@@ -17,6 +17,7 @@
   --warn:#E9AF55; --warn-soft:#3A2A10; --bad:#F08A80; --bad-soft:#401C19;
   --shadow:0 10px 30px rgba(0,0,0,.5); color-scheme:dark}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{background:var(--bg);margin:0}
 body{color:var(--fg);font-family:var(--f-body);font-size:14px;line-height:1.45}
 .wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}

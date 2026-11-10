@@ -254,6 +254,115 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(r.headers["Referrer-Policy"], "no-referrer")
         self.assertEqual(urllib.request.urlopen(BASE + "/app.js").status, 200)
 
+    def test_approval_flow(self):
+        M, L = self.member, self.lead
+        new = {"category": "Project", "title": "Needs approval", "urgency": "High", "lead": ["bob"], "support": [], "target": "2026-12-15",
+               "startDate": "2026-11-01", "percent": 10}
+        # members may only create tasks they lead
+        self.assertEqual(M.req("POST", "/api/teams/automation/tasks", dict(new, lead=["alice"]))[0], 400)
+        s, r, _ = M.req("POST", "/api/teams/automation/tasks", new)
+        self.assertEqual(s, 200)
+        self.assertTrue(r["pending"])
+        tid = r["id"]
+        t = self._task(M, tid)
+        self.assertFalse(t["approved"])
+        self.assertIsNone(t["target"])
+        reqs = L.req("GET", "/api/teams/automation/requests")[1]["requests"]
+        create = next(x for x in reqs if x["taskId"] == tid)
+        self.assertEqual((create["kind"], create["by"]), ("create", "Bob"))
+        self.assertEqual(M.req("POST", "/api/requests/%d/approve" % create["id"])[0], 403)  # members can't approve
+        self.assertEqual(L.req("POST", "/api/requests/%d/approve" % create["id"])[0], 200)
+        t = self._task(M, tid)
+        self.assertTrue(t["approved"])
+        self.assertEqual(t["target"], "2026-12-15")  # proposed target became official on approval
+
+        # member edit -> change request; task unchanged until approved
+        body = dict(self._body(t), percent=60, target="2026-12-20")
+        s, r, _ = M.req("PUT", "/api/tasks/%d" % tid, body)
+        self.assertTrue(r["pending"])
+        body["percent"] = 70  # a second save replaces the pending request
+        M.req("PUT", "/api/tasks/%d" % tid, body)
+        t = self._task(M, tid)
+        self.assertEqual((t["percent"], t["target"]), (10, "2026-12-15"))
+        self.assertTrue(t["changePending"])
+        self.assertTrue(t["request"]["mine"])
+        reqs = [x for x in L.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == tid]
+        self.assertEqual(len(reqs), 1)
+        self.assertIn(["percent", 10, 70], reqs[0]["changes"])
+        self.assertIn(["target", "2026-12-15", "2026-12-20"], reqs[0]["changes"])
+        self.assertEqual(L.req("POST", "/api/requests/%d/approve" % reqs[0]["id"])[0], 200)
+        self.assertEqual(L.req("POST", "/api/requests/%d/approve" % reqs[0]["id"])[0], 409)  # only once
+        t = self._task(M, tid)
+        self.assertEqual((t["percent"], t["target"]), (70, "2026-12-20"))
+        self.assertFalse(t["changePending"])
+        hist = M.req("GET", "/api/tasks/%d/history" % tid)[1]["entries"]
+        edit = next(e for e in hist if e["kind"] == "edit")
+        self.assertEqual(edit["by"], "Bob")               # credited to the member who asked
+        self.assertTrue(any(e["kind"] == "approve" and e["by"] == "Alice" for e in hist))
+
+        # rejection keeps the task as it was and tells the member why
+        M.req("PUT", "/api/tasks/%d" % tid, dict(self._body(t), percent=90))
+        rq = next(x for x in L.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == tid)
+        self.assertEqual(L.req("POST", "/api/requests/%d/reject" % rq["id"], {"note": "Not done yet"})[0], 200)
+        self.assertEqual(self._task(M, tid)["percent"], 70)
+        mine = M.req("GET", "/api/teams/automation/requests")[1]["requests"]
+        rej = next(x for x in mine if x["id"] == rq["id"])
+        self.assertEqual((rej["status"], rej["note"], rej["decidedBy"]), ("rejected", "Not done yet", "Alice"))
+
+        # leads edit directly, no approval
+        s, r, _ = L.req("PUT", "/api/tasks/%d" % tid, dict(self._body(t), percent=80))
+        self.assertNotIn("pending", r)
+        self.assertEqual(self._task(M, tid)["percent"], 80)
+
+    def test_support_engineer_is_read_only(self):
+        tasks = self.member.req("GET", "/api/teams/automation/tasks")[1]["tasks"]
+        t1 = next(t for t in tasks if t["no"] == 1)  # lead alice, support bob
+        self.assertFalse(t1["canEdit"])
+        self.assertEqual(self.member.req("PUT", "/api/tasks/%d" % t1["id"], self._body(t1))[0], 403)
+        t3 = next(t for t in tasks if t["no"] == 3)  # bob leads
+        self.assertTrue(t3["canEdit"])
+
+    def test_kpi_ignores_unapproved_tasks(self):
+        before = self.lead.req("GET", "/api/teams/automation/kpi?from=2026-01-01&to=2026-12-31")[1]["team"]["C"]
+        s, r, _ = self.member.req("POST", "/api/teams/automation/tasks", {"category": "Tickets", "title": "Done, unapproved", "lead": ["bob"],
+                                                                         "target": "2026-02-01", "startDate": "2026-01-20", "actualDate": "2026-01-30"})
+        self.assertEqual(s, 200)
+        after = self.lead.req("GET", "/api/teams/automation/kpi?from=2026-01-01&to=2026-12-31")[1]["team"]["C"]
+        self.assertEqual(before, after)
+        # the member can withdraw their own pending task
+        rq = next(x for x in self.member.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == r["id"])
+        self.assertEqual(self.member.req("DELETE", "/api/requests/%d" % rq["id"])[0], 200)
+        self.assertFalse(any(t["id"] == r["id"] for t in self.member.req("GET", "/api/teams/automation/tasks")[1]["tasks"]))
+
+    def test_teams_are_isolated_and_users_can_join_several(self):
+        A = self.admin
+        s, r, _ = A.req("POST", "/api/teams", {"name": "Team Isolated", "categories": ["Project"]})
+        tid = r["id"]
+        A.req("POST", "/api/teams/%s/tasks" % tid, {"category": "Project", "title": "Secret", "lead": []})  # no people yet -> 400, fine
+        s, p, _ = A.req("POST", "/api/teams/%s/people" % tid, {"name": "Bob", "login": "bob"})  # existing account, linked directly
+        self.assertTrue(p["joined"])
+        self.assertEqual(A.req("POST", "/api/teams/%s/people" % tid, {"name": "Ghost", "login": "nobody-here"})[0], 400)
+        s, r, _ = A.req("POST", "/api/teams/%s/tasks" % tid, {"category": "Project", "title": "Secret", "lead": ["bob"]})
+        self.assertEqual(s, 200)
+        # Bob now has two teams and sees both; he is a member in the new team, so no KPI there
+        teams = {t["id"]: t["role"] for t in self.member.req("GET", "/api/me")[1]["teams"]}
+        self.assertEqual(teams, {"automation": "member", tid: "member"})
+        self.assertEqual(self.member.req("GET", "/api/teams/%s/tasks" % tid)[0], 200)
+        self.assertEqual(self.member.req("GET", "/api/teams/%s/kpi" % tid)[0], 403)
+        # Alice leads Automation but is not in the new team: no tasks, no KPI, no export, no history
+        self.assertEqual(self.lead.req("GET", "/api/teams/%s/tasks" % tid)[0], 403)
+        self.assertEqual(self.lead.req("GET", "/api/teams/%s/kpi" % tid)[0], 403)
+        self.assertEqual(self.lead.req("GET", "/api/teams/%s/export.xlsx" % tid)[0], 403)
+        self.assertEqual(self.lead.req("GET", "/api/tasks/%d/history" % r["id"])[0], 403)
+        self.assertEqual(self.lead.req("PUT", "/api/tasks/%d" % r["id"], {"category": "Project", "title": "x", "lead": ["bob"]})[0], 403)
+        # an invite can be accepted with an existing login, adding the team to that account
+        s, p, _ = A.req("POST", "/api/teams/%s/people" % tid, {"name": "Alice"})
+        url = A.req("POST", "/api/teams/%s/people/%d/link" % (tid, p["id"]))[1]["url"]
+        c = Client()
+        self.assertEqual(c.req("POST", "/api/invite/accept", {"token": link_token(url), "existingLogin": "alice", "existingPassword": "wrong-password"})[0], 401)
+        self.assertEqual(c.req("POST", "/api/invite/accept", {"token": link_token(url), "existingLogin": "alice", "existingPassword": "password-alice-1"})[0], 200)
+        self.assertEqual(self.lead.req("GET", "/api/teams/%s/tasks" % tid)[0], 200)
+
     def test_import_from_workbook(self):
         import xlsx
         import xlsm_import

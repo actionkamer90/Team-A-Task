@@ -70,12 +70,18 @@ CREATE TABLE IF NOT EXISTS tasks(
   urgency TEXT NOT NULL, customer TEXT NOT NULL DEFAULT '', lead TEXT NOT NULL DEFAULT '[]', support TEXT NOT NULL DEFAULT '[]',
   start_date TEXT, requested_target TEXT, target TEXT, target_set_by INTEGER, target_set_at TEXT, actual_date TEXT,
   created_by INTEGER, created_at TEXT NOT NULL, updated_by INTEGER, updated_at TEXT NOT NULL, imported INTEGER NOT NULL DEFAULT 0,
-  UNIQUE(team_id, no));
+  approved INTEGER NOT NULL DEFAULT 1, UNIQUE(team_id, no));
 CREATE INDEX IF NOT EXISTS tasks_team ON tasks(team_id);
 CREATE TABLE IF NOT EXISTS task_log(
   id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, at TEXT NOT NULL,
   user_id INTEGER, kind TEXT NOT NULL, changes TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS task_log_task ON task_log(task_id);
+CREATE TABLE IF NOT EXISTS change_requests(
+  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('create','edit')), data TEXT NOT NULL, by_user INTEGER NOT NULL, at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','cancelled')), note TEXT,
+  decided_by INTEGER, decided_at TEXT);
+CREATE INDEX IF NOT EXISTS change_requests_team ON change_requests(team_id, status);
 """
 
 
@@ -122,6 +128,9 @@ def init_db():
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
     con = connect()
     con.executescript(SCHEMA)
+    cols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)")}
+    if "approved" not in cols:  # upgrade from the first release
+        con.execute("ALTER TABLE tasks ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
     con.close()
 
 
@@ -538,6 +547,22 @@ def api_me(h):
             "today": today(), "archiveDays": ARCHIVE_DAYS}
 
 
+def verify_login(h, login, pw):
+    """Check a login and password with rate limiting; return the user id."""
+    login = (login if isinstance(login, str) else "").strip().lower()[:120]
+    pw = pw if isinstance(pw, str) else ""
+    ip = h.client_ip()
+    if LOGIN_FAILS.blocked((ip, login)) or IP_FAILS.blocked(ip):
+        raise ApiError(429, "Too many failed attempts. Wait 15 minutes and try again.")
+    row = h.con.execute("SELECT * FROM users WHERE login=? AND disabled=0", (login,)).fetchone()
+    if not check_pw(pw, row["pw_hash"] if row else DUMMY_HASH) or not row:
+        LOGIN_FAILS.add((ip, login))
+        IP_FAILS.add(ip)
+        raise ApiError(401, "That login and password don't match.")
+    LOGIN_FAILS.clear((ip, login))
+    return row["id"]
+
+
 @route("POST", "/api/login")
 def api_login(h):
     login = s_field(h.body, "login", 120, True).lower()
@@ -617,8 +642,11 @@ def api_invite_accept(h):
     with Tx(h.con):
         inv = load_invite(h, h.body.get("token"))
         kind, uid = inv["kind"], inv["user_id"]
-        if kind == "invite" and h.body.get("useCurrent"):
-            uid = h.need_user()["id"]
+        if kind == "invite" and (h.body.get("useCurrent") or h.body.get("existingLogin")):
+            if h.body.get("existingLogin"):
+                uid = verify_login(h, h.body.get("existingLogin"), h.body.get("existingPassword"))
+            else:
+                uid = h.need_user()["id"]
             person = h.con.execute("SELECT * FROM people WHERE id=?", (inv["person_id"],)).fetchone()
             if h.con.execute("SELECT 1 FROM people WHERE team_id=? AND user_id=? AND active=1 AND id<>?",
                              (person["team_id"], uid, person["id"])).fetchone():
@@ -765,12 +793,22 @@ def api_person_add(h, tid):
     if role not in ("lead", "member"):
         raise bad("Role must be lead or member.")
     check_role_change(h, tid, role)
+    uid = None
+    login = s_field(h.body, "login", 120).lower()
+    if login:
+        u = h.con.execute("SELECT id FROM users WHERE login=? AND disabled=0", (login,)).fetchone()
+        if not u:
+            raise bad("No account uses the login '%s'. Leave Login empty and send an invite link instead." % login)
+        uid = u["id"]
+        if h.con.execute("SELECT 1 FROM people WHERE team_id=? AND user_id=? AND active=1", (tid, uid)).fetchone():
+            raise bad("That account is already on this team.")
     with Tx(h.con):
         key = slug(name)
         while h.con.execute("SELECT 1 FROM people WHERE team_id=? AND key=?", (tid, key)).fetchone():
             key += "-2"
-        cur = h.con.execute("INSERT INTO people(team_id,key,name,role,active,created_at) VALUES(?,?,?,?,1,?)", (tid, key, name, role, now_iso()))
-    return {"id": cur.lastrowid, "key": key}
+        cur = h.con.execute("INSERT INTO people(team_id,key,name,role,user_id,active,created_at) VALUES(?,?,?,?,?,1,?)",
+                            (tid, key, name, role, uid, now_iso()))
+    return {"id": cur.lastrowid, "key": key, "joined": uid is not None}
 
 
 def get_person(h, tid, pid):
@@ -831,27 +869,36 @@ def api_person_unlink(h, tid, pid):
 
 
 # ---------------------------------------------------------------- routes: tasks
-def load_tasks(h, tid):
+# Rules: team leads and the administrator change any task in their team directly.
+# Members change only tasks where they are a Lead Engineer, and every change waits for the
+# team lead's approval (a "change request"). A member's new task stays "awaiting approval"
+# until the lead approves it; until then it isn't counted in the KPI.
+def load_tasks(h, tid, approved_only=False):
     out = []
-    for r in h.con.execute("SELECT * FROM tasks WHERE team_id=? ORDER BY no", (tid,)):
+    q = "SELECT * FROM tasks WHERE team_id=?" + (" AND approved=1" if approved_only else "") + " ORDER BY no"
+    for r in h.con.execute(q, (tid,)):
         t = dict(r)
         t["lead"], t["support"] = json.loads(t["lead"]), json.loads(t["support"])
         out.append(t)
     return out
 
 
-def can_edit(role, my_key, uid, t):
+def can_edit(role, my_key, t):
     if role in ("lead", "admin"):
         return True
-    return bool(my_key) and (my_key in t["lead"] or my_key in t["support"] or t["created_by"] == uid)
+    return bool(my_key) and my_key in t["lead"]
 
 
-def task_out(t, role, my_key, uid, td):
-    return {"id": t["id"], "no": t["no"], "category": t["category"], "title": t["title"], "progress": t["progress"], "percent": t["percent"],
-            "urgency": t["urgency"], "customer": t["customer"], "lead": t["lead"], "support": t["support"], "startDate": t["start_date"],
-            "requestedTarget": t["requested_target"], "target": t["target"], "effTarget": t["target"] or t["requested_target"],
-            "pending": not t["target"] and bool(t["requested_target"]), "actualDate": t["actual_date"], "status": status_of(t, td),
-            "archived": is_archived(t, td), "canEdit": can_edit(role, my_key, uid, t), "imported": bool(t["imported"]), "updatedAt": t["updated_at"]}
+def task_out(t, role, my_key, uid, td, req=None):
+    out = {"id": t["id"], "no": t["no"], "category": t["category"], "title": t["title"], "progress": t["progress"], "percent": t["percent"],
+           "urgency": t["urgency"], "customer": t["customer"], "lead": t["lead"], "support": t["support"], "startDate": t["start_date"],
+           "requestedTarget": t["requested_target"], "target": t["target"], "effTarget": t["target"] or t["requested_target"],
+           "pending": not t["target"] and bool(t["requested_target"]), "actualDate": t["actual_date"], "status": status_of(t, td),
+           "archived": is_archived(t, td), "canEdit": can_edit(role, my_key, t), "approved": bool(t["approved"]),
+           "changePending": bool(req) and req["kind"] == "edit", "imported": bool(t["imported"]), "updatedAt": t["updated_at"]}
+    if req and req["kind"] == "edit" and (req["by_user"] == uid or role in ("lead", "admin")):
+        out["request"] = {"id": req["id"], "mine": req["by_user"] == uid, "data": json.loads(req["data"]), "at": req["at"]}
+    return out
 
 
 @route("GET", "/api/teams/([a-z0-9-]+)/tasks")
@@ -859,12 +906,14 @@ def api_tasks(h, tid):
     role = h.need_member(tid)
     me = h.my_person(tid)
     td = today()
-    return {"today": td, "tasks": [task_out(t, role, me and me["key"], h.user["id"], td) for t in load_tasks(h, tid)]}
+    reqs = {r["task_id"]: dict(r) for r in h.con.execute("SELECT * FROM change_requests WHERE team_id=? AND status='pending'", (tid,))}
+    return {"today": td, "tasks": [task_out(t, role, me and me["key"], h.user["id"], td, reqs.get(t["id"])) for t in load_tasks(h, tid)],
+            "pendingApprovals": len(reqs) if role in ("lead", "admin") else None}
 
 
 TASK_FIELDS = [("category", "Category"), ("title", "Main task"), ("customer", "Customer"), ("urgency", "Urgency"), ("percent", "Task percentage"),
                ("progress", "Task progress"), ("lead", "Lead engineer"), ("support", "Support engineer"), ("start_date", "Start date"),
-               ("requested_target", "Requested target"), ("actual_date", "Actual date")]
+               ("actual_date", "Actual date")]
 
 
 def parse_task(h, tid, body, team):
@@ -888,6 +937,8 @@ def parse_task(h, tid, body, team):
     d = {"category": cat, "title": s_field(body, "title", 200, True), "customer": s_field(body, "customer", 100),
          "urgency": urg, "percent": max(0, min(100, pct)), "progress": s_field(body, "progress", 8000),
          "lead": ppl("lead"), "support": ppl("support"), "start_date": d_field(body, "startDate"), "actual_date": d_field(body, "actualDate")}
+    if not d["lead"]:
+        raise bad("Choose at least one Lead Engineer.")
     if d["actual_date"]:
         d["percent"] = 100
         if d["start_date"] and d["actual_date"] < d["start_date"]:
@@ -897,8 +948,20 @@ def parse_task(h, tid, body, team):
     return d
 
 
-def log(h, task_id, kind, changes):
-    h.con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,?,?,?)", (task_id, now_iso(), h.user["id"], kind, json.dumps(changes)))
+def diff_task(t, d, target):
+    changes = []
+    for f, _ in TASK_FIELDS:
+        if f in d and (d[f] or None) != (t[f] or None) and not (f in ("lead", "support") and sorted(d[f]) == sorted(t[f])):
+            changes.append([f] if f == "progress" else [f, cut(t[f]), cut(d[f])])
+    cur = t["target"] or t["requested_target"]
+    if target != cur:
+        changes.append(["target", cur, target])
+    return changes
+
+
+def log(h, task_id, kind, changes, user_id=None):
+    h.con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,?,?,?)",
+                  (task_id, now_iso(), user_id or h.user["id"], kind, json.dumps(changes)))
 
 
 def cut(v):
@@ -907,26 +970,46 @@ def cut(v):
     return v
 
 
+def write_fields(h, task_id, d, user_id):
+    sets = ", ".join("%s=?" % f for f in d)
+    vals = [json.dumps(v) if isinstance(v, list) else v for v in d.values()]
+    h.con.execute("UPDATE tasks SET %s, updated_by=?, updated_at=? WHERE id=?" % sets, vals + [user_id, now_iso(), task_id])
+
+
+def set_target(h, t, new):
+    h.con.execute("UPDATE tasks SET target=?, requested_target=COALESCE(requested_target, ?), target_set_by=?, target_set_at=?, updated_at=? WHERE id=?",
+                  (new, new, h.user["id"], now_iso(), now_iso(), t["id"]))
+    log(h, t["id"], "target", {"from": t["target"], "to": new})
+
+
 @route("POST", "/api/teams/([a-z0-9-]+)/tasks")
 def api_task_create(h, tid):
     role = h.need_member(tid)
     team = h.team(tid)
     d = parse_task(h, tid, h.body, team)
-    req = d_field(h.body, "target")
+    target = d_field(h.body, "target")
     lead = role in ("lead", "admin")
+    me = h.my_person(tid)
+    if not lead and me["key"] not in d["lead"]:
+        raise bad("Add yourself as a Lead Engineer. You can only manage tasks you lead.")
     ts = now_iso()
     with Tx(h.con):
         no = (h.con.execute("SELECT MAX(no) FROM tasks WHERE team_id=?", (tid,)).fetchone()[0] or 0) + 1
         cur = h.con.execute(
             "INSERT INTO tasks(team_id,no,category,title,progress,percent,urgency,customer,lead,support,start_date,requested_target,"
-            "target,target_set_by,target_set_at,actual_date,created_by,created_at,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "target,target_set_by,target_set_at,actual_date,created_by,created_at,updated_by,updated_at,approved) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, no, d["category"], d["title"], d["progress"], d["percent"], d["urgency"], d["customer"], json.dumps(d["lead"]),
-             json.dumps(d["support"]), d["start_date"], req, req if lead else None, h.user["id"] if lead and req else None,
-             ts if lead and req else None, d["actual_date"], h.user["id"], ts, h.user["id"], ts))
-        log(h, cur.lastrowid, "create", [])
-        if lead and req:
-            log(h, cur.lastrowid, "target", {"from": None, "to": req})
-    return {"id": cur.lastrowid, "no": no}
+             json.dumps(d["support"]), d["start_date"], target, target if lead else None, h.user["id"] if lead and target else None,
+             ts if lead and target else None, d["actual_date"], h.user["id"], ts, h.user["id"], ts, 1 if lead else 0))
+        task_id = cur.lastrowid
+        log(h, task_id, "create", [])
+        if lead and target:
+            log(h, task_id, "target", {"from": None, "to": target})
+        if not lead:
+            h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
+                          (task_id, tid, "create", json.dumps({"no": no, "title": d["title"]}), h.user["id"], ts))
+    return {"id": task_id, "no": no, "pending": not lead}
 
 
 def get_task(h, task_id):
@@ -943,24 +1026,43 @@ def api_task_update(h, task_id):
     t = get_task(h, task_id)
     role = h.need_member(t["team_id"])
     me = h.my_person(t["team_id"])
-    if not can_edit(role, me and me["key"], h.user["id"], t):
-        raise ApiError(403, "Only this task's engineers and the team lead can change it.")
+    my_key = me and me["key"]
+    if not can_edit(role, my_key, t):
+        raise ApiError(403, "Only the task's Lead Engineer or the team lead can change it.")
     d = parse_task(h, t["team_id"], h.body, h.team(t["team_id"]))
-    # members may propose a target only while no official target exists
-    if not t["target"] and "requestedTarget" in h.body:
-        d["requested_target"] = d_field(h.body, "requestedTarget")
-    changes = []
-    for f, _ in TASK_FIELDS:
-        if f in d and (d[f] or None) != (t[f] or None) and not (f in ("lead", "support") and sorted(d[f]) == sorted(t[f])):
-            changes.append([f] if f == "progress" else [f, cut(t[f]), cut(d[f])])
+    target = d_field(h.body, "target") if "target" in h.body else (t["target"] or t["requested_target"])
+    lead = role in ("lead", "admin")
+    if not lead and my_key not in d["lead"]:
+        raise bad("Keep yourself as a Lead Engineer, or ask your team lead to hand the task over.")
+    changes = diff_task(t, d, target)
     if not changes:
         return {"ok": True, "changed": False}
-    sets = ", ".join("%s=?" % f for f in d)
-    vals = [json.dumps(v) if isinstance(v, list) else v for v in d.values()]
     with Tx(h.con):
-        h.con.execute("UPDATE tasks SET %s, updated_by=?, updated_at=? WHERE id=?" % sets, vals + [h.user["id"], now_iso(), t["id"]])
-        log(h, t["id"], "edit", changes)
-    return {"ok": True, "changed": True}
+        if lead:
+            field_changes = [c for c in changes if c[0] != "target"]
+            if field_changes:
+                write_fields(h, t["id"], d, h.user["id"])
+                log(h, t["id"], "edit", field_changes)
+            if target and target != t["target"]:
+                set_target(h, t, target)
+            return {"ok": True, "changed": True}
+        if not t["approved"]:
+            # the member's own new task, still waiting for approval as a whole: edit it in place
+            d["requested_target"] = target
+            write_fields(h, t["id"], d, h.user["id"])
+            log(h, t["id"], "edit", changes)
+            return {"ok": True, "changed": True, "pending": True}
+        other = h.con.execute("SELECT r.*, u.display_name FROM change_requests r LEFT JOIN users u ON u.id=r.by_user "
+                              "WHERE r.task_id=? AND r.status='pending' AND r.kind='edit'", (t["id"],)).fetchone()
+        data = dict(d, target=target)
+        if other and other["by_user"] != h.user["id"]:
+            raise ApiError(409, "%s's changes to this task are waiting for the team lead. Try again after they're reviewed." % (other["display_name"] or "Someone"))
+        if other:
+            h.con.execute("UPDATE change_requests SET data=?, at=? WHERE id=?", (json.dumps(data), now_iso(), other["id"]))
+        else:
+            h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
+                          (t["id"], t["team_id"], "edit", json.dumps(data), h.user["id"], now_iso()))
+    return {"ok": True, "changed": True, "pending": True}
 
 
 @route("PUT", "/api/tasks/([0-9]+)/target")
@@ -973,9 +1075,7 @@ def api_task_target(h, task_id):
     if new == t["target"]:
         return {"ok": True, "changed": False}
     with Tx(h.con):
-        h.con.execute("UPDATE tasks SET target=?, target_set_by=?, target_set_at=?, updated_at=? WHERE id=?",
-                      (new, h.user["id"], now_iso(), now_iso(), t["id"]))
-        log(h, t["id"], "target", {"from": t["target"], "to": new})
+        set_target(h, t, new)
     return {"ok": True, "changed": True}
 
 
@@ -984,6 +1084,8 @@ def api_task_delete(h, task_id):
     t = get_task(h, task_id)
     h.need_lead(t["team_id"])
     with Tx(h.con):
+        h.con.execute("UPDATE change_requests SET status='cancelled', decided_by=?, decided_at=? WHERE task_id=? AND status='pending'",
+                      (h.user["id"], now_iso(), t["id"]))
         h.con.execute("DELETE FROM tasks WHERE id=?", (t["id"],))
     return {"ok": True}
 
@@ -994,8 +1096,112 @@ def api_task_history(h, task_id):
     h.need_member(t["team_id"])
     rows = h.con.execute("SELECT l.*, u.display_name FROM task_log l LEFT JOIN users u ON u.id=l.user_id WHERE task_id=? ORDER BY l.id DESC",
                          (t["id"],)).fetchall()
-    return {"imported": bool(t["imported"]),
-            "entries": [{"at": r["at"], "by": r["display_name"] or "Someone", "kind": r["kind"], "changes": json.loads(r["changes"])} for r in rows]}
+    names = {r["id"]: r["display_name"] for r in h.con.execute("SELECT id, display_name FROM users")}
+    entries = []
+    for r in rows:
+        ch = json.loads(r["changes"])
+        if isinstance(ch, dict) and "of" in ch:
+            ch["of"] = names.get(ch["of"], "Someone")
+        entries.append({"at": r["at"], "by": r["display_name"] or "Someone", "kind": r["kind"], "changes": ch})
+    return {"imported": bool(t["imported"]), "entries": entries}
+
+
+# ---------------------------------------------------------------- routes: approvals
+def request_out(h, r, tasks_by_id):
+    t = tasks_by_id.get(r["task_id"])
+    data = json.loads(r["data"])
+    out = {"id": r["id"], "kind": r["kind"], "status": r["status"], "at": r["at"], "by": r["by_name"] or "Someone",
+           "note": r["note"], "decidedBy": r["decided_name"], "decidedAt": r["decided_at"], "taskId": r["task_id"],
+           "no": t["no"] if t else data.get("no"), "title": t["title"] if t else data.get("title")}
+    if r["kind"] == "edit" and t and r["status"] == "pending":
+        out["changes"] = diff_task(t, {k: v for k, v in data.items() if k != "target"}, data.get("target"))
+    elif r["kind"] == "edit":
+        out["changes"] = data.get("_applied", [])
+    if r["kind"] == "create" and t:
+        out["task"] = {"category": t["category"], "urgency": t["urgency"], "customer": t["customer"], "lead": t["lead"], "support": t["support"],
+                       "startDate": t["start_date"], "target": t["requested_target"], "progress": cut(t["progress"])}
+    return out
+
+
+@route("GET", "/api/teams/([a-z0-9-]+)/requests")
+def api_requests(h, tid):
+    """Leads: every pending request in the team. Members: their own requests from the last 30 days."""
+    role = h.need_member(tid)
+    q = ("SELECT r.*, a.display_name AS by_name, b.display_name AS decided_name FROM change_requests r "
+         "LEFT JOIN users a ON a.id=r.by_user LEFT JOIN users b ON b.id=r.decided_by WHERE r.team_id=? ")
+    if role in ("lead", "admin") and h.query.get("scope") != "mine":
+        rows = h.con.execute(q + "AND r.status='pending' ORDER BY r.at", (tid,)).fetchall()
+    else:
+        since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)).isoformat()
+        rows = h.con.execute(q + "AND r.by_user=? AND (r.status='pending' OR r.decided_at>?) ORDER BY r.at DESC", (tid, h.user["id"], since)).fetchall()
+    tasks = {t["id"]: t for t in load_tasks(h, tid)}
+    return {"requests": [request_out(h, dict(r), tasks) for r in rows]}
+
+
+def get_request(h, rid):
+    r = h.con.execute("SELECT * FROM change_requests WHERE id=?", (int(rid),)).fetchone()
+    if not r:
+        raise NOT_FOUND
+    if r["status"] != "pending":
+        raise ApiError(409, "This request was already %s." % r["status"])
+    return dict(r)
+
+
+@route("POST", "/api/requests/([0-9]+)/approve")
+def api_request_approve(h, rid):
+    r = get_request(h, rid)
+    h.need_lead(r["team_id"])
+    with Tx(h.con):
+        t = get_task(h, r["task_id"])
+        if r["kind"] == "create":
+            h.con.execute("UPDATE tasks SET approved=1, updated_at=? WHERE id=?", (now_iso(), t["id"]))
+            log(h, t["id"], "approve", {"request": "create", "of": r["by_user"]})
+            if t["requested_target"] and not t["target"]:
+                set_target(h, t, t["requested_target"])
+            applied = []
+        else:
+            data = json.loads(r["data"])
+            target = data.pop("target", None)
+            applied = diff_task(t, data, target)
+            field_changes = [c for c in applied if c[0] != "target"]
+            if field_changes:
+                write_fields(h, t["id"], data, r["by_user"])
+                log(h, t["id"], "edit", field_changes, user_id=r["by_user"])
+            if target and target != t["target"]:
+                set_target(h, t, target)
+            log(h, t["id"], "approve", {"request": "edit", "of": r["by_user"]})
+            h.con.execute("UPDATE change_requests SET data=? WHERE id=?", (json.dumps(dict(json.loads(r["data"]), _applied=applied)), r["id"]))
+        h.con.execute("UPDATE change_requests SET status='approved', decided_by=?, decided_at=? WHERE id=?", (h.user["id"], now_iso(), r["id"]))
+    return {"ok": True}
+
+
+@route("POST", "/api/requests/([0-9]+)/reject")
+def api_request_reject(h, rid):
+    r = get_request(h, rid)
+    h.need_lead(r["team_id"])
+    note = s_field(h.body, "note", 500)
+    with Tx(h.con):
+        if r["kind"] == "create":
+            h.con.execute("DELETE FROM tasks WHERE id=? AND approved=0", (r["task_id"],))
+        else:
+            log(h, r["task_id"], "reject", {"of": r["by_user"], "note": note})
+        h.con.execute("UPDATE change_requests SET status='rejected', note=?, decided_by=?, decided_at=? WHERE id=?",
+                      (note, h.user["id"], now_iso(), r["id"]))
+    return {"ok": True}
+
+
+@route("DELETE", "/api/requests/([0-9]+)")
+def api_request_cancel(h, rid):
+    """The requester withdraws their own pending request (a pending new task is removed)."""
+    r = get_request(h, rid)
+    h.need_member(r["team_id"])
+    if r["by_user"] != h.user["id"]:
+        raise FORBIDDEN
+    with Tx(h.con):
+        if r["kind"] == "create":
+            h.con.execute("DELETE FROM tasks WHERE id=? AND approved=0", (r["task_id"],))
+        h.con.execute("UPDATE change_requests SET status='cancelled', decided_by=?, decided_at=? WHERE id=?", (h.user["id"], now_iso(), r["id"]))
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- routes: KPI & export
@@ -1014,7 +1220,7 @@ def api_kpi(h, tid):
     h.need_lead(tid)
     frm, to = kpi_range(h)
     ppl = [dict(r) for r in people_rows(h, tid)]
-    return compute_kpi(h.team(tid), load_tasks(h, tid), ppl, frm, to)
+    return compute_kpi(h.team(tid), load_tasks(h, tid, approved_only=True), ppl, frm, to)
 
 
 @route("GET", "/api/teams/([a-z0-9-]+)/export.xlsx")
@@ -1032,7 +1238,7 @@ def api_export(h, tid):
     def rows(lst):
         return [head] + [[t["no"], t["category"], t["title"], t["progress"], t["percent"] / 100, t["urgency"], t["customer"], nm(t["lead"]),
                           nm(t["support"]), xlsx.Date(t["start_date"]), xlsx.Date(t["target"] or t["requested_target"]), xlsx.Date(t["actual_date"]),
-                          status_of(t, td), "" if not (t["target"] or t["requested_target"]) else ("Yes" if t["target"] else "Awaiting lead")]
+                          status_of(t, td), "New task awaiting approval" if not t["approved"] else "" if not (t["target"] or t["requested_target"]) else ("Yes" if t["target"] else "Awaiting lead")]
                          for t in lst]
     fmt = {4: "pct"}
     widths = [8, 11, 34, 50, 10, 9, 18, 16, 18, 11, 11, 11, 17, 13]
@@ -1040,7 +1246,7 @@ def api_export(h, tid):
               xlsx.Sheet("Archive", rows([t for t in tasks if is_archived(t, td)]), widths, fmt)]
     if role in ("lead", "admin"):
         frm, to = kpi_range(h)
-        K = compute_kpi(team, tasks, ppl, frm, to)
+        K = compute_kpi(team, [t for t in tasks if t["approved"]], ppl, frm, to)
         c = K["config"]
         kh = ["Engineer", "Lead Tasks", "Support Tasks", "Total Tasks", "Lead On Time", "Lead Late", "Lead On-Time %", "Support On Time",
               "Support Late", "Support On-Time %", "Total On-Time %", "Completed Early", "Early %",
