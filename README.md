@@ -34,7 +34,8 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Status colours.** Completed Early shows in purple, Completed On Time in green.
 - **KPI dashboard (leads only).** KPI = On-time % × 80% + Early % × 20%. Each lead and support
   involvement counts individually. Ratings: Excellent ≥ 90%, Good ≥ 70%, Needs Improvement ≥ 60%,
-  otherwise At Risk. Weights and thresholds are editable per team.
+  otherwise At Risk. Weights and thresholds are editable per team. The dashboard lists only the team's current
+  members; people removed from the team drop off it, while the team total still counts their tasks.
 - **Change history** on every task: who changed what, and when.
 - **Export to Excel (.xlsx)**: Daily Task Tracker and Archive sheets for everyone, plus KPI Scorecard
   and Lead Tasks by Category for leads.

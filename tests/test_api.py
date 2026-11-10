@@ -192,6 +192,15 @@ class TrackerTest(unittest.TestCase):
         k2 = self.lead.req("GET", "/api/teams/automation/kpi?from=2026-03-11&to=2026-03-31")[1]
         self.assertEqual(k2["team"]["C"], 1)  # only the late job finished in that window
 
+    def test_kpi_lists_only_current_team_members(self):
+        team = {"kpi": {}, "categories": ["Project"]}
+        task = {"id": 1, "category": "Project", "lead": ["ann", "gone"], "support": ["outsider"], "target": "2026-03-10",
+                "requested_target": None, "actual_date": "2026-03-10"}
+        people = [{"key": "ann", "name": "Ann", "active": 1}, {"key": "gone", "name": "Gone", "active": 0}]
+        k = server.compute_kpi(team, [task], people, "2026-03-01", "2026-03-31")
+        self.assertEqual([r["key"] for r in k["rows"]], ["ann"])  # removed and non-members are left out
+        self.assertEqual(k["team"]["C"], 1)                         # the team total still counts the task
+
     def test_export(self):
         s, data, hd = self.member.req("GET", "/api/teams/automation/export.xlsx", raw=True)
         self.assertEqual(s, 200)

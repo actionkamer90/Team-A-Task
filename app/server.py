@@ -343,9 +343,7 @@ def compute_kpi(team, tasks, people, frm, to):
     late = lambda t: st[t["id"]] == "Completed Late"
     early = lambda t: st[t["id"]] == "Completed Early"
     names = {p["key"]: p["name"] for p in people}
-    keys = set(p["key"] for p in people if p["active"])
-    for t in done:
-        keys.update(t["lead"] + t["support"])
+    keys = set(p["key"] for p in people if p["active"])  # only current team members; removed people drop off
 
     def row(name, L, S):
         C, D = len(L), len(S)
