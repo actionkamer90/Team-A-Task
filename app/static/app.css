@@ -149,3 +149,4 @@ th.sortable .arrow{opacity:.35;font-size:12px}
 th.sorted{color:var(--fg)}
 th.sorted .arrow{opacity:1;color:var(--accent)}
 @media (max-width:600px){.sortbar{justify-content:stretch}.sortbar .field{flex:1 1 auto}}
+th.center-t,td.center-t{text-align:center}

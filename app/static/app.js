@@ -105,7 +105,7 @@ setInterval(() => { if (S.phase === "ready" && document.visibilityState === "vis
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S.phase === "ready" && !document.querySelector(".sheet")) reloadTeam(); });
 
 /* ---------- shell ---------- */
-const VIEWS = [["tracker", "Tracker", () => true], ["completed", "Archive", () => true], ["summary", "Summary", () => true],
+const VIEWS = [["tracker", "Tracker", () => true], ["completed", "Archive", () => true], ["summary", "Summary", () => true], ["customers", "Customers", () => true],
   ["approvals", "Approvals", () => isLead()], ["requests", "My Requests", () => !isLead() && !!myKey()], ["kpi", "KPI Dashboard", () => isLead()], ["team", "Team & Invites", () => isLead()], ["admin", "All Teams", () => S.me?.user?.isAdmin]];
 let refreshFn = null;
 function refresh() { if (refreshFn) refreshFn(); }
@@ -140,7 +140,7 @@ function render() {
       onclick: () => { S.view = id; store.set("tt.view", id); render(); }
     })))));
   const main = h("main", { class: "wrap" }); app.append(main);
-  ({ tracker: viewTracker, completed: viewCompleted, approvals: viewApprovals, requests: viewRequests, summary: viewSummary, kpi: viewKPI, team: viewTeam, admin: viewAdmin })[S.view](main);
+  ({ tracker: viewTracker, completed: viewCompleted, approvals: viewApprovals, requests: viewRequests, summary: viewSummary, customers: viewCustomers, kpi: viewKPI, team: viewTeam, admin: viewAdmin })[S.view](main);
   refresh();
 }
 function card(title, body) { return h("div", { class: "center" }, h("div", { class: "card" }, h("h2", { text: title }), body)); }
@@ -433,7 +433,8 @@ function taskSheet(t) {
   const fCat = h("select", { id: "t-cat", disabled: locked }, h("option", { value: "", text: "Choose…" }), tm.categories.map(c => h("option", { value: c, text: c })));
   fCat.value = T.category || "";
   const fTitle = h("input", { type: "text", id: "t-title", value: T.title, disabled: locked, maxlength: "200", placeholder: "e.g. Quarterly health check" });
-  const fCust = h("input", { type: "text", id: "t-cust", value: T.customer || "", disabled: locked, list: "cust-list", maxlength: "100" });
+  const fCust = h("input", { type: "text", id: "t-cust", value: T.customer || "", disabled: locked, list: "cust-list", maxlength: "100",
+    placeholder: tm.customers.length ? "Pick from the list or type a name" : "No customers assigned to this team yet (Customers tab)" });
   const dl = h("datalist", { id: "cust-list" }, tm.customers.map(c => h("option", { value: c })));
   const fUrg = h("select", { id: "t-urg", disabled: locked }, tm.urgencies.map(u => h("option", { value: u, text: u }))); fUrg.value = T.urgency;
   const fPct = h("input", { type: "number", id: "t-pct", min: "0", max: "100", step: "5", value: String(T.percent || 0), disabled: locked });
@@ -646,6 +647,138 @@ function viewSummary(main) {
   };
 }
 
+/* ---------- customers (each customer is assigned to the teams that work with it) ---------- */
+function viewCustomers(main) {
+  const body = h("div"), unl = h("div"), count = h("span", { class: "muted" }), btns = h("span", { class: "row" });
+  let q = "", tf = "", data = null, all = null;
+  const search = h("input", { type: "search", id: "c-q", placeholder: "Find a customer…", oninput: e => { q = e.target.value.trim().toLowerCase(); draw(); } });
+  const teamF = h("select", { id: "c-team", onchange: e => { tf = e.target.value; draw(); } });
+  const bar = h("div", { class: "bar" }, h("label", { class: "field grow" }, h("span", { text: "Search" }), search));
+  const intro = h("p", { class: "muted m0" });
+  main.append(h("div", { class: "row between" }, h("h2", { text: "Customers" }), h("div", { class: "row" }, count, btns)), intro, bar, body, unl);
+  const showTasks = name => { S.f = { q: name, person: "", status: "", cat: "", urg: "", mine: false }; S.view = "tracker"; store.set("tt.view", "tracker"); render(); };
+  const match = c => !q || c.name.toLowerCase().includes(q);
+  const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+  const changed = () => { reloadTeam(); load(); };
+  const num = v => h("td", { class: "num mono", text: String(v) });
+  function drawAdmin() {
+    const list = all.customers.filter(c => match(c) && (!tf || (tf === "-" ? !c.teams.length : c.teams.includes(tf))));
+    count.textContent = plural(all.customers.length, "customer");
+    body.replaceChildren(h("div", { class: "panel" }, h("h3", { text: "Customers and their teams" }),
+      h("p", { class: "muted small m0", text: "Tick the teams that work with each customer. A team's task form offers only its own customers. Changes save straight away." }),
+      list.length ? h("div", { class: "tscroll" }, h("table", {},
+        h("thead", {}, h("tr", {}, h("th", { text: "Customer" }), all.teams.map(t => h("th", { class: "center-t", text: t.name })), h("th", { class: "num", text: "Tasks (all teams)" }), h("th", {}))),
+        h("tbody", {}, list.map(c => h("tr", {}, h("td", { text: c.name }),
+          all.teams.map(t => h("td", { class: "center-t" }, h("input", { type: "checkbox", checked: c.teams.includes(t.id), "aria-label": c.name + " — " + t.name,
+            onchange: async e => {
+              const want = e.target.checked, teams = want ? [...c.teams, t.id] : c.teams.filter(x => x !== t.id);
+              e.target.disabled = true;
+              try { await api("PUT", "/api/customers/" + c.id, { teams }); c.teams = teams; toast((want ? "Added " + c.name + " to " : "Removed " + c.name + " from ") + t.name); reloadTeam(); }
+              catch (x) { e.target.checked = !want; toast(x.message); }
+              e.target.disabled = false;
+            } }))),
+          num(c.tasks),
+          h("td", { class: "nowrap" }, h("button", { class: "btn small", text: "Edit", onclick: () => customerSheet(c, all.teams, changed) })))))))
+        : h("p", { class: "muted m0", text: all.customers.length ? "No customer matches." : "No customers yet. Use Add customers to start the list." })));
+  }
+  function drawTeam() {
+    const list = data.customers.filter(match);
+    count.textContent = plural(data.customers.length, "customer");
+    body.replaceChildren(h("div", { class: "panel" }, h("h3", { text: team().name + " customers" }),
+      list.length ? h("div", { class: "tscroll" }, h("table", {},
+        h("thead", {}, h("tr", {}, ["Customer", "Open tasks", "All tasks", ""].map((c, i) => h("th", { class: i && c ? "num" : "", text: c })))),
+        h("tbody", {}, list.map(c => {
+          let armed = false;
+          const rm = data.canAdd ? h("button", { class: "btn small", style: "margin-left:6px", text: "Remove from team", onclick: async () => {
+            if (!armed) { armed = true; rm.textContent = "Click again to remove"; setTimeout(() => { armed = false; rm.textContent = "Remove from team"; }, 3000); return; }
+            try { await api("DELETE", "/api/teams/" + S.teamId + "/customers/" + c.id); toast("Removed " + c.name + " from " + team().name + ". Its tasks keep the name."); changed(); } catch (e) { toast(e.message); }
+          } }) : null;
+          return h("tr", {}, h("td", { text: c.name }), num(c.open), num(c.total),
+            h("td", { class: "nowrap" }, c.total ? h("button", { class: "btn small", text: "View tasks", onclick: () => showTasks(c.name) }) : null, rm));
+        }))))
+        : h("p", { class: "muted m0", text: data.customers.length ? "No customer matches your search." : "No customers are assigned to " + team().name + " yet." + (data.canAdd ? " Use Add customers." : " Ask your team lead to add them.") })));
+  }
+  function draw() {
+    if (!data) return;
+    all ? drawAdmin() : drawTeam();
+    const un = data.unlisted.filter(match);
+    unl.replaceChildren(un.length ? h("div", { class: "panel" }, h("h3", { text: "Typed on " + team().name + " tasks but not on its list" }),
+      h("p", { class: "muted small m0", text: data.canAdd ? "Add them to the team so everyone can pick them from the list." : "Your team lead can add them to the list." }),
+      h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["Customer", "Open tasks", "All tasks", ""].map((c, i) => h("th", { class: i && c ? "num" : "", text: c })))),
+        h("tbody", {}, un.map(c => h("tr", {}, h("td", { text: c.name }), num(c.open), num(c.total),
+          h("td", { class: "nowrap" }, h("button", { class: "btn small", text: "View tasks", onclick: () => showTasks(c.name) }),
+            data.canAdd ? h("button", { class: "btn small", style: "margin-left:6px", text: "Add to " + team().name, onclick: async () => {
+              try { await api("POST", "/api/teams/" + S.teamId + "/customers", { names: [c.name] }); toast("Added " + c.name + " to " + team().name); changed(); } catch (e) { toast(e.message); }
+            } }) : null))))))) : null);
+  }
+  async function load() {
+    try {
+      [data, all] = await Promise.all([api("GET", "/api/teams/" + S.teamId + "/customers"), S.me.user.isAdmin ? api("GET", "/api/admin/customers") : null]);
+      if (all) {
+        intro.textContent = "Choose which teams work with each customer. Each team's task form offers only the customers ticked for it.";
+        teamF.replaceChildren(h("option", { value: "", text: "All teams" }), all.teams.map(t => h("option", { value: t.id, text: t.name })), h("option", { value: "-", text: "Not on any team" }));
+        teamF.value = tf; if (!teamF.parentNode) bar.append(h("label", { class: "field" }, h("span", { text: "Team" }), teamF));
+      } else intro.textContent = "The customers " + team().name + " works with. They are offered in the Customer field when you add or edit a task." + (data.canAdd ? " Customers you add here are added to " + team().name + " only." : "");
+      btns.replaceChildren(data.canAdd ? h("button", { class: "btn primary", text: "+ Add customers", onclick: () => addCustomersSheet(all, changed) }) : "");
+      draw();
+    } catch (e) { body.replaceChildren(h("p", { class: "bad-text", text: e.message })); }
+  }
+  refreshFn = null;
+  load();
+}
+function teamChecks(teams, selected) {
+  const box = h("div", { class: "toggles", id: "c-teams" }), set = new Set(selected);
+  teams.forEach(t => { const b = h("button", { type: "button", "aria-pressed": String(set.has(t.id)), text: t.name,
+    onclick: () => { set.has(t.id) ? set.delete(t.id) : set.add(t.id); b.setAttribute("aria-pressed", String(set.has(t.id))); } }); box.append(b); });
+  box.value = () => [...set];
+  return box;
+}
+function addCustomersSheet(all, done) {
+  const ta = h("textarea", { id: "c-new", placeholder: "One customer per line" });
+  const teams = all ? teamChecks(all.teams, [S.teamId]) : null;
+  openSheet("Add customers", [h("label", { class: "field" }, h("span", { text: "Customer names (one per line)" }), ta),
+    teams ? h("div", { class: "field" }, h("span", { class: "lbl", text: "Teams that work with them" }), teams) : null,
+    h("p", { class: "muted small m0", text: all ? "A name already on the list (in any letter case) is not duplicated: it is added to the teams you pick."
+      : "They are added to " + team().name + ". A name already used by another team is reused, not duplicated." })],
+    [h("button", { class: "btn primary", text: "Add", onclick: async () => {
+      const names = ta.value.split("\n").map(x => x.trim()).filter(Boolean);
+      if (!names.length) { toast("Enter at least one customer name."); return ta.focus(); }
+      try {
+        const r = all ? await api("POST", "/api/admin/customers", { names, teams: teams.value() }) : await api("POST", "/api/teams/" + S.teamId + "/customers", { names });
+        closeSheet(); toast((r.added.length ? "Added " + r.added.length + " customer" + (r.added.length === 1 ? "" : "s") : "No new customers") + (r.existing.length ? ". Already on the list: " + r.existing.join(", ") : ""));
+        done();
+      } catch (e) { toast(e.message); }
+    } }), h("button", { class: "btn", text: "Cancel", onclick: closeSheet })]);
+}
+function customerSheet(c, teams, done) {
+  const fName = h("input", { type: "text", id: "c-name", value: c.name, maxlength: "100" });
+  const fTeams = teamChecks(teams, c.teams);
+  let merge = false;
+  const save = h("button", { class: "btn primary", text: "Save", onclick: async () => {
+    const name = fName.value.trim();
+    if (!name) { toast("Enter a name."); return fName.focus(); }
+    try {
+      const r = await api("PUT", "/api/customers/" + c.id, { name, teams: fTeams.value(), merge });
+      closeSheet(); toast(r.merged ? "Merged into " + r.name : name !== c.name ? "Renamed to " + r.name + (r.tasks ? ". " + r.tasks + " task" + (r.tasks === 1 ? "" : "s") + " updated." : "") : "Saved");
+      done();
+    } catch (e) {
+      toast(e.message);
+      if (e.status === 409) { merge = true; save.textContent = "Merge"; }
+    }
+  } });
+  fName.addEventListener("input", () => { merge = false; save.textContent = "Save"; });
+  let armed = false;
+  const del = h("button", { class: "btn danger right", text: "Delete", onclick: async () => {
+    if (!armed) { armed = true; del.textContent = "Click again to delete"; setTimeout(() => { armed = false; del.textContent = "Delete"; }, 3000); return; }
+    try { await api("DELETE", "/api/customers/" + c.id); closeSheet(); toast("Deleted " + c.name + ". Tasks keep the name."); done(); } catch (e) { toast(e.message); }
+  } });
+  openSheet("Edit customer", [h("label", { class: "field" }, h("span", { text: "Customer name" }), fName),
+    h("div", { class: "field" }, h("span", { class: "lbl", text: "Teams that work with this customer" }), fTeams),
+    h("p", { class: "muted small m0", text: "Renaming also renames the customer on every team's tasks (" + c.tasks + " task" + (c.tasks === 1 ? "" : "s") + "), and each change shows in the task's history. Renaming to a name already on the list merges the two." }),
+    h("p", { class: "muted small m0", text: "Deleting takes the customer off every team's list; tasks keep the name." })],
+    [save, h("button", { class: "btn", text: "Cancel", onclick: closeSheet }), del]);
+}
+
 /* ---------- KPI ---------- */
 function isoLocal(d) { return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); }
 function viewKPI(main) {
@@ -789,14 +922,13 @@ function teamSheet(tm) {
   const isNew = !tm;
   const fName = h("input", { type: "text", id: "tm-name", value: tm?.name || "", maxlength: "80", placeholder: "e.g. Team Network" });
   const fCats = h("textarea", { id: "tm-cats" }); fCats.value = (tm?.categories || DEFAULT_CATS).join("\n");
-  const fCust = h("textarea", { id: "tm-cust" }); fCust.value = (tm?.customers || []).join("\n");
   openSheet(isNew ? "Create team" : "Team settings", [h("label", { class: "field" }, h("span", { text: "Team name" }), fName),
     h("label", { class: "field" }, h("span", { text: "Task categories (one per line)" }), fCats),
-    h("label", { class: "field" }, h("span", { text: "Customers (one per line, offered as suggestions)" }), fCust)],
+    h("p", { class: "muted small m0", text: "Choose this team's customers on the Customers tab." })],
     [h("button", { class: "btn primary", text: isNew ? "Create team" : "Save", onclick: async () => {
       const lines = x => x.value.split("\n").map(s => s.trim()).filter(Boolean);
       try {
-        const body = { name: fName.value, categories: lines(fCats), customers: lines(fCust) };
+        const body = { name: fName.value, categories: lines(fCats) };
         if (isNew) { const r = await api("POST", "/api/teams", body); closeSheet(); toast("Team created. Next, add its team lead."); await loadMe(); await selectTeam(r.id); S.view = "team"; render(); }
         else { await api("PUT", "/api/teams/" + tm.id, body); closeSheet(); toast("Saved"); await loadMe(); }
       } catch (e) { toast(e.message); }

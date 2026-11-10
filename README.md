@@ -12,15 +12,27 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
   | Role | Can do |
   |---|---|
   | Member | See their team's tasks; add tasks they lead; update the details of tasks where they are a **Lead Engineer** (saved straight away). A new or changed **target date**, and a **completion dated before today** (backdated actual date), wait for the team lead's **approval**; they follow these under *My Requests*. Support engineers see a task but can't change it. |
-  | Team lead | Change any task in their team directly; **approve or reject** proposed target dates and backdated completions (with a reason); see the **KPI dashboard**; invite and remove members; edit categories, customers and KPI settings |
-  | Administrator | Everything, on every team; create teams; add team leads; give or remove administrator access and invite new administrators (*All Teams → Administrators*) |
+  | Team lead | Change any task in their team directly; **approve or reject** proposed target dates and backdated completions (with a reason); see the **KPI dashboard**; invite and remove members; edit categories and KPI settings; add customers to their team |
+  | Administrator | Everything, on every team; create teams; add team leads; assign customers to teams; rename, merge or delete customers; give or remove administrator access and invite new administrators (*All Teams → Administrators*) |
 - **Teams are separate.** People see only the teams they belong to: no tasks, history, KPI or export
   from any other team. **One person can belong to several teams** with one login: a lead adds them
   by their existing login, or they accept the new team's invite with "I already have an account",
   then switch teams at the top of the page. Their role can differ per team.
 - **Target dates.** Until the lead approves, a member's proposed date on a task with no official target
   shows as "awaiting lead"; on a task with an official target, the official date stays in force.
-- **Multiple teams.** Each team has its own people, categories, customers and KPI settings.
+- **Multiple teams.** Each team has its own people, categories and KPI settings.
+- **Customers, assigned to teams.** One customer list; each customer is assigned to the teams that work with it, and
+  a team's task form offers only its own customers. Manage them on the *Customers* tab:
+  - Administrators see every customer with a checkbox per team, and tick the teams for each one. They can also add,
+    rename, merge or delete customers. A rename or merge also changes the name on every team's tasks, and shows in each
+    task's history. Deleting takes a customer off every team's list; tasks keep the name.
+  - Team leads add customers to their own team (a name another team already uses is reused, not duplicated) and take
+    them off their team.
+  - Everyone sees their team's customers with open and total task counts, plus names typed on the team's tasks that
+    aren't on its list yet.
+
+  On upgrade, every team's existing customers, and every customer already named on a task, go on the list once,
+  assigned to every team. Untick the teams that don't work with a customer.
 - **Daily tasks.** Status is calculated from the target and actual dates, as in the workbook:
   On-Going, Delay, No Target, Completed Early, Completed On Time, Completed Late.
 - **Sorting.** On the Tracker and Archive, click any column header to sort by it (click again to

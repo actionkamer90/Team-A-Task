@@ -542,6 +542,95 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(L.req("PUT", "/api/tasks/%d" % t["id"], dict(b, target="2026-03-16"))[0], 200)  # the lead can
         L.req("PUT", "/api/tasks/%d" % t["id"], dict(b, target="2026-03-10"))  # put it back for other tests
 
+    def test_customers_are_assigned_to_teams(self):
+        A, L, M = self.admin, self.lead, self.member
+        s, r, _ = A.req("POST", "/api/teams", {"name": "Team Legacy Cust", "categories": ["Project"]})
+        other = r["id"]
+        A.req("POST", "/api/teams/%s/people" % other, {"name": "Cara"})
+        # a new team starts with no customers; the imported team has its own
+        self.assertEqual(A.req("GET", "/api/teams/%s" % other)[1]["customers"], [])
+        self.assertIn("Acme", M.req("GET", "/api/teams/automation")[1]["customers"])
+        # a lead adds customers to their own team only; members and other teams' leads can't
+        s, r, _ = L.req("POST", "/api/teams/automation/customers", {"names": ["Zeta Corp", "acme"]})
+        self.assertEqual((s, r["added"], r["existing"]), (200, ["Zeta Corp"], ["acme"]))
+        self.assertEqual(M.req("POST", "/api/teams/automation/customers", {"names": ["Nope"]})[0], 403)
+        self.assertEqual(L.req("POST", "/api/teams/%s/customers" % other, {"names": ["Nope"]})[0], 403)
+        self.assertNotIn("Zeta Corp", A.req("GET", "/api/teams/%s" % other)[1]["customers"])
+        # the administrator assigns customers to teams: an existing name is reused, not duplicated
+        self.assertEqual(L.req("GET", "/api/admin/customers")[0], 403)
+        s, r, _ = A.req("POST", "/api/admin/customers", {"names": ["zeta corp", "Mainframe Bank"], "teams": [other]})
+        self.assertEqual((s, r["added"], r["existing"]), (200, ["Mainframe Bank"], ["zeta corp"]))
+        self.assertEqual(A.req("POST", "/api/admin/customers", {"names": ["X"], "teams": ["no-such-team"]})[0], 400)
+        self.assertEqual(A.req("GET", "/api/teams/%s" % other)[1]["customers"], ["Mainframe Bank", "Zeta Corp"])
+        self.assertNotIn("Mainframe Bank", M.req("GET", "/api/teams/automation")[1]["customers"])
+        allc = {c["name"]: c for c in A.req("GET", "/api/admin/customers")[1]["customers"]}
+        z, mb = allc["Zeta Corp"], allc["Mainframe Bank"]
+        self.assertEqual(z["teams"], sorted(["automation", other]))
+        # per-team counts; names typed on a team's tasks but not assigned to it are reported for that team only
+        t = self._task(L, 4)
+        self.assertEqual(L.req("PUT", "/api/tasks/%d" % t["id"], dict(self._body(t), customer="zeta corp"))[0], 200)
+        self.assertEqual(A.req("POST", "/api/teams/%s/tasks" % other, {"category": "Project", "title": "Other", "lead": ["cara"], "customer": "Unlisted Co"})[0], 200)
+        s, r, _ = M.req("GET", "/api/teams/automation/customers")
+        zc = next(c for c in r["customers"] if c["name"] == "Zeta Corp")
+        self.assertEqual((zc["open"], zc["total"], r["canAdd"]), (1, 1, False))
+        self.assertNotIn("Unlisted Co", [c["name"] for c in r["unlisted"]])
+        self.assertIn("Unlisted Co", [c["name"] for c in A.req("GET", "/api/teams/%s/customers" % other)[1]["unlisted"]])
+        self.assertEqual(M.req("GET", "/api/teams/%s/customers" % other)[0], 403)
+        self.assertEqual(self.outsider.req("GET", "/api/teams/automation/customers")[0], 401)
+        # a lead takes a customer off their team; other teams keep it
+        self.assertEqual(M.req("DELETE", "/api/teams/automation/customers/%d" % z["id"])[0], 403)
+        self.assertEqual(L.req("DELETE", "/api/teams/automation/customers/%d" % z["id"])[0], 200)
+        self.assertNotIn("Zeta Corp", L.req("GET", "/api/teams/automation")[1]["customers"])
+        self.assertIn("Zeta Corp", A.req("GET", "/api/teams/%s" % other)[1]["customers"])
+        # the administrator sets a customer's teams
+        self.assertEqual(L.req("PUT", "/api/customers/%d" % z["id"], {"teams": ["automation"]})[0], 403)
+        self.assertEqual(A.req("PUT", "/api/customers/%d" % z["id"], {"teams": ["automation"]})[0], 200)
+        self.assertIn("Zeta Corp", L.req("GET", "/api/teams/automation")[1]["customers"])
+        self.assertNotIn("Zeta Corp", A.req("GET", "/api/teams/%s" % other)[1]["customers"])
+        # a rename reaches every team's tasks and their history
+        s, r, _ = A.req("PUT", "/api/customers/%d" % z["id"], {"name": "Zeta Ltd"})
+        self.assertEqual((s, r["tasks"], r["merged"]), (200, 1, False))
+        self.assertEqual(self._task(L, 4)["customer"], "Zeta Ltd")
+        hist = L.req("GET", "/api/tasks/%d/history" % t["id"])[1]["entries"][0]
+        self.assertEqual((hist["by"], hist["changes"]), ("Admin", [["customer", "zeta corp", "Zeta Ltd"]]))
+        # renaming onto an existing name needs merge; the merged customer keeps both customers' teams
+        self.assertEqual(A.req("PUT", "/api/customers/%d" % z["id"], {"name": "MAINFRAME BANK"})[0], 409)
+        s, r, _ = A.req("PUT", "/api/customers/%d" % z["id"], {"name": "MAINFRAME BANK", "merge": True})
+        self.assertEqual((s, r["name"], r["merged"], r["id"]), (200, "Mainframe Bank", True, mb["id"]))
+        self.assertEqual(self._task(L, 4)["customer"], "Mainframe Bank")
+        allc = {c["name"]: c for c in A.req("GET", "/api/admin/customers")[1]["customers"]}
+        self.assertNotIn("Zeta Ltd", allc)
+        self.assertEqual(allc["Mainframe Bank"]["teams"], sorted(["automation", other]))
+        # delete takes it off every team; tasks keep the name
+        self.assertEqual(L.req("DELETE", "/api/customers/%d" % mb["id"])[0], 403)
+        self.assertEqual(A.req("DELETE", "/api/customers/%d" % mb["id"])[0], 200)
+        self.assertNotIn("Mainframe Bank", A.req("GET", "/api/teams/%s" % other)[1]["customers"])
+        self.assertEqual(self._task(L, 4)["customer"], "Mainframe Bank")
+        L.req("PUT", "/api/tasks/%d" % t["id"], dict(self._body(self._task(L, 4)), customer=""))
+
+    def test_existing_customers_go_to_every_team_on_upgrade(self):
+        path = os.path.join(TMP, "upgrade.db")
+        con = server.sqlite3.connect(path)
+        con.executescript(server.SCHEMA + "DROP TABLE customer_teams; DROP TABLE customers;")
+        con.execute("INSERT INTO teams VALUES('a','A','[]','[\"Acme\",\"Beta\"]','{}','2026-01-01')")
+        con.execute("INSERT INTO teams VALUES('b','B','[]','[\"beta\",\"Gamma\"]','{}','2026-01-02')")
+        con.execute("INSERT INTO teams VALUES('c','Legacy','[]','[]','{}','2026-01-03')")
+        con.execute("INSERT INTO tasks(team_id,no,category,title,urgency,customer,created_at,updated_at) VALUES('b',1,'x','t','Low','Delta','x','x')")
+        con.commit()
+        con.close()
+        old, server.DB_PATH = server.DB_PATH, path
+        try:
+            server.init_db()
+            con = server.connect()
+            self.assertEqual(server.customer_names(con), ["Acme", "Beta", "Delta", "Gamma"])
+            self.assertEqual(server.customer_names(con, "c"), ["Acme", "Beta", "Delta", "Gamma"])  # a team with none gets them all
+            con.execute("DELETE FROM customer_teams WHERE team_id='c'")
+            con.close()
+            server.init_db()  # runs once: removed assignments don't come back
+            self.assertEqual(server.customer_names(server.connect(), "c"), [])
+        finally:
+            server.DB_PATH = old
+
     # helpers
     def _task(self, cli, tid):
         return next(t for t in cli.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if t["id"] == tid)

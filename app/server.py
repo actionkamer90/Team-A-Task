@@ -95,6 +95,12 @@ CREATE TABLE IF NOT EXISTS change_requests(
   status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','cancelled')), note TEXT,
   decided_by INTEGER, decided_at TEXT);
 CREATE INDEX IF NOT EXISTS change_requests_team ON change_requests(team_id, status);
+CREATE TABLE IF NOT EXISTS customers(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, created_by INTEGER, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS customer_teams(
+  customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE, team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  PRIMARY KEY(customer_id, team_id));
+CREATE INDEX IF NOT EXISTS customer_teams_team ON customer_teams(team_id);
 """
 
 
@@ -140,7 +146,18 @@ class Tx:
 def init_db():
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
     con = connect()
+    had = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     con.executescript(SCHEMA)
+    if "customer_teams" not in had:
+        # Upgrade to the customer list: every existing customer (each team's own list and every customer named on a task)
+        # goes on the list once, assigned to every team. Administrators then choose the teams on the Customers tab.
+        names = []
+        if "customers" not in had:
+            for r in con.execute("SELECT customers FROM teams ORDER BY created_at"):
+                names += json.loads(r[0] or "[]")
+            names += [r[0] for r in con.execute("SELECT DISTINCT customer FROM tasks WHERE TRIM(customer)<>'' ORDER BY customer")]
+        add_customers(con, names)
+        con.execute("INSERT OR IGNORE INTO customer_teams SELECT c.id, t.id FROM customers c, teams t")
     cols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)")}
     if "approved" not in cols:  # upgrade from the first release
         con.execute("ALTER TABLE tasks ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
@@ -153,6 +170,29 @@ def init_db():
             con.execute("UPDATE change_requests SET status='cancelled' WHERE id=?", (r["id"],))
     con.execute("UPDATE tasks SET approved=1 WHERE approved=0")
     con.close()
+
+
+def add_customers(con, names, uid=None, team_ids=()):
+    """Put names on the customer list (blanks skipped; a name already on it in any letter case is reused) and assign
+    them to team_ids. Returns the names as stored that were newly assigned to the first team (or newly created)."""
+    out, ts = [], now_iso()
+    for n in names:
+        n = (n or "").strip()[:100]
+        if not n:
+            continue
+        created = con.execute("INSERT OR IGNORE INTO customers(name,created_by,created_at) VALUES(?,?,?)", (n, uid, ts)).rowcount
+        c = con.execute("SELECT id, name FROM customers WHERE name=?", (n,)).fetchone()
+        new = [con.execute("INSERT OR IGNORE INTO customer_teams VALUES(?,?)", (c["id"], t)).rowcount for t in team_ids]
+        if (new[0] if new else created) and c["name"] not in out:
+            out.append(c["name"])
+    return out
+
+
+def customer_names(con, team_id=None):
+    if team_id is None:
+        return [r[0] for r in con.execute("SELECT name FROM customers ORDER BY name COLLATE NOCASE")]
+    return [r[0] for r in con.execute("SELECT c.name FROM customers c JOIN customer_teams ct ON ct.customer_id=c.id "
+                                      "WHERE ct.team_id=? ORDER BY c.name COLLATE NOCASE", (team_id,))]
 
 
 def import_team(con, data):
@@ -184,6 +224,7 @@ def import_team(con, data):
                  100 if r.get("actualDate") else int(r.get("percent") or 0), r.get("urgency") or "Medium", r.get("customer") or "",
                  json.dumps(r.get("lead", [])), json.dumps(r.get("support", [])), r.get("startDate"), r.get("target"), r.get("target"),
                  r.get("actualDate"), ts, ts))
+        add_customers(con, (tm.get("customers") or []) + [r.get("customer") or "" for r in data["tasks"]], team_ids=[tid])
     return tid, len(data["people"]), len(data["tasks"])
 
 
@@ -212,10 +253,7 @@ def sync_team(con, tid, data, dry_run=False):
         for p in data["people"]:
             if p["key"] not in have:
                 con.execute("INSERT INTO people(team_id,key,name,role,active,created_at) VALUES(?,?,?,'member',1,?)", (tid, p["key"], p["name"], ts))
-        custs = json.loads(con.execute("SELECT customers FROM teams WHERE id=?", (tid,)).fetchone()[0])
-        extra = [c for c in data["team"].get("customers", []) if c not in custs]
-        if extra:
-            con.execute("UPDATE teams SET customers=? WHERE id=?", (json.dumps(custs + extra), tid))
+        add_customers(con, data["team"].get("customers", []) + [w.get("customer") or "" for w in data["tasks"]], team_ids=[tid])
         for w in data["tasks"]:
             t = live.get(w["no"])
             if not t:
@@ -547,7 +585,8 @@ class Handler(BaseHTTPRequestHandler):
         if not r:
             raise NOT_FOUND
         t = dict(r)
-        t["categories"], t["customers"], t["kpi"] = json.loads(t["categories"]), json.loads(t["customers"]), json.loads(t["kpi"])
+        t["categories"], t["kpi"] = json.loads(t["categories"]), json.loads(t["kpi"])
+        t["customers"] = customer_names(self.con, tid)  # the customers assigned to this team (Customers tab)
         return t
 
     def my_person(self, tid):
@@ -821,7 +860,8 @@ def api_team_create(h):
         tid = slug(name)
         while h.con.execute("SELECT 1 FROM teams WHERE id=?", (tid,)).fetchone():
             tid += "-2"
-        h.con.execute("INSERT INTO teams VALUES(?,?,?,?,?,?)", (tid, name, json.dumps(cats), json.dumps(custs), json.dumps(DEFAULT_KPI), now_iso()))
+        h.con.execute("INSERT INTO teams VALUES(?,?,?,?,?,?)", (tid, name, json.dumps(cats), "[]", json.dumps(DEFAULT_KPI), now_iso()))
+        add_customers(h.con, custs, h.user["id"], [tid])
     return {"id": tid}
 
 
@@ -847,7 +887,7 @@ def api_team_update(h, tid):
     t = h.team(tid)
     name = s_field(h.body, "name", 80, True, t["name"])
     cats = list_field(h.body, "categories", 30, 60) if "categories" in h.body else t["categories"]
-    custs = list_field(h.body, "customers", 300, 100) if "customers" in h.body else t["customers"]
+    custs = list_field(h.body, "customers", 300, 100) if "customers" in h.body else []  # only adds customers to this team
     if not cats:
         raise bad("Add at least one category.")
     kpi = t["kpi"]
@@ -864,8 +904,147 @@ def api_team_update(h, tid):
         if not kpi["excellent"] > kpi["good"] > kpi["needs"]:
             raise bad("Thresholds must go Excellent > Good > Needs Improvement.")
     with Tx(h.con):
-        h.con.execute("UPDATE teams SET name=?, categories=?, customers=?, kpi=? WHERE id=?",
-                      (name, json.dumps(cats), json.dumps(custs), json.dumps(kpi), tid))
+        h.con.execute("UPDATE teams SET name=?, categories=?, kpi=? WHERE id=?", (name, json.dumps(cats), json.dumps(kpi), tid))
+        add_customers(h.con, custs, h.user["id"], [tid])
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- routes: customers
+# One customer list; each customer is assigned to the teams that work with it. A team's task form offers only its own
+# customers. Team leads add customers to (and take them off) their own team; administrators assign customers to any
+# team, and rename, merge or delete them.
+def task_use(con, tid):
+    """{lower name: (name, open tasks, all tasks)} for the customers named on a team's tasks."""
+    return {r["c"].lower(): (r["c"], r["open"], r["total"]) for r in con.execute(
+        "SELECT TRIM(customer) AS c, SUM(actual_date IS NULL) AS open, COUNT(*) AS total FROM tasks "
+        "WHERE team_id=? AND TRIM(customer)<>'' GROUP BY TRIM(customer) COLLATE NOCASE", (tid,))}
+
+
+@route("GET", "/api/teams/([a-z0-9-]+)/customers")
+def api_customers(h, tid):
+    """This team's customers with how many of its tasks name each one, and names typed on its tasks that aren't
+    assigned to it. Counts never cover other teams."""
+    role = h.need_member(tid)
+    use = task_use(h.con, tid)
+    out = []
+    for r in h.con.execute("SELECT c.id, c.name FROM customers c JOIN customer_teams ct ON ct.customer_id=c.id "
+                           "WHERE ct.team_id=? ORDER BY c.name COLLATE NOCASE", (tid,)):
+        _, o, n = use.pop(r["name"].lower(), (None, 0, 0))
+        out.append({"id": r["id"], "name": r["name"], "open": o, "total": n})
+    unlisted = sorted(({"name": c, "open": o, "total": n} for c, o, n in use.values()), key=lambda x: x["name"].lower())
+    return {"customers": out, "unlisted": unlisted, "canAdd": role in ("lead", "admin"), "isAdmin": bool(h.user["is_admin"])}
+
+
+@route("POST", "/api/teams/([a-z0-9-]+)/customers")
+def api_customers_add(h, tid):
+    """A lead adds customers to their team: new names go on the list, names already on it are assigned to the team."""
+    h.need_lead(tid)
+    names = list_field(h.body, "names", 300, 100)
+    if not names:
+        raise bad("Enter at least one customer name.")
+    with Tx(h.con):
+        added = add_customers(h.con, names, h.user["id"], [tid])
+    low = {a.lower() for a in added}
+    return {"added": added, "existing": [n for n in names if n.lower() not in low]}
+
+
+@route("DELETE", "/api/teams/([a-z0-9-]+)/customers/([0-9]+)")
+def api_customers_unassign(h, tid, cid):
+    """Take a customer off this team's list. Its tasks keep the name; other teams are not affected."""
+    h.need_lead(tid)
+    with Tx(h.con):
+        if not h.con.execute("DELETE FROM customer_teams WHERE team_id=? AND customer_id=?", (tid, int(cid))).rowcount:
+            raise NOT_FOUND
+    return {"ok": True}
+
+
+def need_admin(h):
+    if not h.need_user()["is_admin"]:
+        raise ApiError(403, "Only an administrator can do that, because customers can belong to several teams.")
+
+
+def team_ids_field(h, key="teams"):
+    v = h.body.get(key)
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        raise bad("teams must be a list of team ids.")
+    known = {r[0] for r in h.con.execute("SELECT id FROM teams")}
+    if set(v) - known:
+        raise bad("Unknown team: %s" % ", ".join(sorted(set(v) - known)))
+    return sorted(set(v))
+
+
+@route("GET", "/api/admin/customers")
+def api_admin_customers(h):
+    """Every customer with the teams it is assigned to and the number of tasks naming it on any team."""
+    need_admin(h)
+    teams = [{"id": r["id"], "name": r["name"]} for r in h.con.execute("SELECT id, name FROM teams ORDER BY name COLLATE NOCASE")]
+    assign = {}
+    for r in h.con.execute("SELECT customer_id, team_id FROM customer_teams"):
+        assign.setdefault(r[0], []).append(r[1])
+    tasks = {r[0]: r[1] for r in h.con.execute("SELECT LOWER(TRIM(customer)), COUNT(*) FROM tasks WHERE TRIM(customer)<>'' GROUP BY 1")}
+    return {"teams": teams, "customers": [{"id": r["id"], "name": r["name"], "teams": sorted(assign.get(r["id"], [])),
+                                           "tasks": tasks.get(r["name"].lower(), 0)}
+                                          for r in h.con.execute("SELECT id, name FROM customers ORDER BY name COLLATE NOCASE")]}
+
+
+@route("POST", "/api/admin/customers")
+def api_admin_customers_add(h):
+    need_admin(h)
+    names = list_field(h.body, "names", 300, 100)
+    if not names:
+        raise bad("Enter at least one customer name.")
+    tids = team_ids_field(h)
+    with Tx(h.con):
+        before = set(n.lower() for n in customer_names(h.con))
+        add_customers(h.con, names, h.user["id"], tids)
+    return {"added": [n for n in names if n.lower() not in before], "existing": [n for n in names if n.lower() in before]}
+
+
+def admin_customer(h, cid):
+    need_admin(h)
+    c = h.con.execute("SELECT * FROM customers WHERE id=?", (int(cid),)).fetchone()
+    if not c:
+        raise NOT_FOUND
+    return c
+
+
+@route("PUT", "/api/customers/([0-9]+)")
+def api_customer_update(h, cid):
+    """Change a customer's teams and/or name. A rename also renames it on every team's tasks (logged in each task's
+    history). Renaming to a name already on the list merges the two (their teams combined), only when the request says merge."""
+    c = admin_customer(h, cid)
+    tids = team_ids_field(h) if "teams" in h.body else None
+    new = s_field(h.body, "name", 100, True) if "name" in h.body else c["name"]
+    ts, keep, other, rows = now_iso(), c["id"], None, []
+    with Tx(h.con):
+        if tids is not None:
+            h.con.execute("DELETE FROM customer_teams WHERE customer_id=?", (c["id"],))
+            h.con.executemany("INSERT INTO customer_teams VALUES(?,?)", [(c["id"], t) for t in tids])
+        if new != c["name"]:
+            other = h.con.execute("SELECT id, name FROM customers WHERE name=? AND id<>?", (new, c["id"])).fetchone()
+            if other:
+                if not h.body.get("merge"):
+                    raise ApiError(409, "'%s' is already on the list. Merge the two customers?" % other["name"])
+                new, keep = other["name"], other["id"]
+                h.con.execute("INSERT OR IGNORE INTO customer_teams SELECT ?, team_id FROM customer_teams WHERE customer_id=?", (keep, c["id"]))
+                h.con.execute("DELETE FROM customers WHERE id=?", (c["id"],))
+            else:
+                h.con.execute("UPDATE customers SET name=? WHERE id=?", (new, c["id"]))
+            rows = h.con.execute("SELECT id, customer FROM tasks WHERE TRIM(customer)=? COLLATE NOCASE", (c["name"],)).fetchall()
+            for t in rows:
+                if t["customer"] != new:
+                    h.con.execute("UPDATE tasks SET customer=?, updated_at=?, updated_by=? WHERE id=?", (new, ts, h.user["id"], t["id"]))
+                    h.con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,?,'edit',?)",
+                                  (t["id"], ts, h.user["id"], json.dumps([["customer", t["customer"], new]])))
+    return {"ok": True, "id": keep, "name": new, "merged": bool(other), "tasks": len(rows)}
+
+
+@route("DELETE", "/api/customers/([0-9]+)")
+def api_customer_delete(h, cid):
+    """Take a customer off the list and off every team. Tasks keep the name they already have."""
+    c = admin_customer(h, cid)
+    with Tx(h.con):
+        h.con.execute("DELETE FROM customers WHERE id=?", (c["id"],))
     return {"ok": True}
 
 
