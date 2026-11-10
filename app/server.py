@@ -131,6 +131,14 @@ def init_db():
     cols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)")}
     if "approved" not in cols:  # upgrade from the first release
         con.execute("ALTER TABLE tasks ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
+    # Rule change: members' new tasks no longer need approval, only target dates do.
+    for r in con.execute("SELECT r.id, t.requested_target, t.target FROM change_requests r JOIN tasks t ON t.id=r.task_id "
+                         "WHERE r.kind='create' AND r.status='pending'").fetchall():
+        if r["requested_target"] and not r["target"]:
+            con.execute("UPDATE change_requests SET kind='edit', data=? WHERE id=?", (json.dumps({"target": r["requested_target"]}), r["id"]))
+        else:
+            con.execute("UPDATE change_requests SET status='cancelled' WHERE id=?", (r["id"],))
+    con.execute("UPDATE tasks SET approved=1 WHERE approved=0")
     con.close()
 
 
@@ -953,9 +961,10 @@ def api_person_unlink(h, tid, pid):
 
 # ---------------------------------------------------------------- routes: tasks
 # Rules: team leads and the administrator change any task in their team directly.
-# Members change only tasks where they are a Lead Engineer, and every change waits for the
-# team lead's approval (a "change request"). A member's new task stays "awaiting approval"
-# until the lead approves it; until then it isn't counted in the KPI.
+# Members change only tasks where they are a Lead Engineer. Their detail changes save straight
+# away; only a new or changed TARGET DATE waits for the team lead's approval (a change request
+# whose data is {"target": date}). Until approved, a proposed date on a task with no official
+# target shows as "awaiting lead".
 def load_tasks(h, tid, approved_only=False):
     out = []
     q = "SELECT * FROM tasks WHERE team_id=?" + (" AND approved=1" if approved_only else "") + " ORDER BY no"
@@ -1084,15 +1093,15 @@ def api_task_create(h, tid):
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, no, d["category"], d["title"], d["progress"], d["percent"], d["urgency"], d["customer"], json.dumps(d["lead"]),
              json.dumps(d["support"]), d["start_date"], target, target if lead else None, h.user["id"] if lead and target else None,
-             ts if lead and target else None, d["actual_date"], h.user["id"], ts, h.user["id"], ts, 1 if lead else 0))
+             ts if lead and target else None, d["actual_date"], h.user["id"], ts, h.user["id"], ts, 1))
         task_id = cur.lastrowid
         log(h, task_id, "create", [])
         if lead and target:
             log(h, task_id, "target", {"from": None, "to": target})
-        if not lead:
+        if not lead and target:
             h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
-                          (task_id, tid, "create", json.dumps({"no": no, "title": d["title"]}), h.user["id"], ts))
-    return {"id": task_id, "no": no, "pending": not lead}
+                          (task_id, tid, "edit", json.dumps({"target": target}), h.user["id"], ts))
+    return {"id": task_id, "no": no, "pending": bool(not lead and target)}
 
 
 def get_task(h, task_id):
@@ -1129,23 +1138,40 @@ def api_task_update(h, task_id):
             if target and target != t["target"]:
                 set_target(h, t, target)
             return {"ok": True, "changed": True}
-        if not t["approved"]:
-            # the member's own new task, still waiting for approval as a whole: edit it in place
-            d["requested_target"] = target
+        field_changes = [c for c in changes if c[0] != "target"]
+        target_changed = target != (t["target"] or t["requested_target"])
+        if target_changed:
+            if not target:
+                raise bad("Only your team lead can remove a target date.")
+            request_target(h, t, target)
+        if field_changes:
             write_fields(h, t["id"], d, h.user["id"])
-            log(h, t["id"], "edit", changes)
-            return {"ok": True, "changed": True, "pending": True}
-        other = h.con.execute("SELECT r.*, u.display_name FROM change_requests r LEFT JOIN users u ON u.id=r.by_user "
-                              "WHERE r.task_id=? AND r.status='pending' AND r.kind='edit'", (t["id"],)).fetchone()
-        data = dict(d, target=target)
-        if other and other["by_user"] != h.user["id"]:
-            raise ApiError(409, "%s's changes to this task are waiting for the team lead. Try again after they're reviewed." % (other["display_name"] or "Someone"))
-        if other:
-            h.con.execute("UPDATE change_requests SET data=?, at=? WHERE id=?", (json.dumps(data), now_iso(), other["id"]))
-        else:
-            h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
-                          (t["id"], t["team_id"], "edit", json.dumps(data), h.user["id"], now_iso()))
-    return {"ok": True, "changed": True, "pending": True}
+            log(h, t["id"], "edit", field_changes)
+    return {"ok": True, "changed": True, "pending": target_changed}
+
+
+def request_target(h, t, target):
+    """A member proposes a target date: one pending proposal per task, replaced if the same person proposes again."""
+    other = h.con.execute("SELECT r.*, u.display_name FROM change_requests r LEFT JOIN users u ON u.id=r.by_user "
+                          "WHERE r.task_id=? AND r.status='pending' AND r.kind='edit'", (t["id"],)).fetchone()
+    if other and other["by_user"] != h.user["id"]:
+        raise ApiError(409, "%s already proposed a new target date for this task. Ask your team lead to review it first."
+                       % (other["display_name"] or "Someone"))
+    data = json.dumps({"target": target})
+    if other:
+        h.con.execute("UPDATE change_requests SET data=?, at=? WHERE id=?", (data, now_iso(), other["id"]))
+    else:
+        h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
+                      (t["id"], t["team_id"], "edit", data, h.user["id"], now_iso()))
+    if not t["target"]:
+        h.con.execute("UPDATE tasks SET requested_target=? WHERE id=?", (target, t["id"]))
+
+
+def drop_proposal(h, r):
+    """After a rejected or withdrawn proposal, a task with no official target stops showing the proposed date."""
+    prop = json.loads(r["data"]).get("target")
+    if prop:
+        h.con.execute("UPDATE tasks SET requested_target=NULL WHERE id=? AND target IS NULL AND requested_target=?", (r["task_id"], prop))
 
 
 @route("PUT", "/api/tasks/([0-9]+)/target")
@@ -1195,8 +1221,10 @@ def request_out(h, r, tasks_by_id):
     data = json.loads(r["data"])
     out = {"id": r["id"], "kind": r["kind"], "status": r["status"], "at": r["at"], "by": r["by_name"] or "Someone",
            "note": r["note"], "decidedBy": r["decided_name"], "decidedAt": r["decided_at"], "taskId": r["task_id"],
-           "no": t["no"] if t else data.get("no"), "title": t["title"] if t else data.get("title")}
-    if r["kind"] == "edit" and t and r["status"] == "pending":
+           "no": t["no"] if t else data.get("no"), "title": t["title"] if t else data.get("title"), "proposedTarget": data.get("target")}
+    if r["kind"] == "edit" and t and r["status"] == "pending" and set(data) == {"target"}:
+        out["changes"] = [["target", t["target"], data["target"]]]  # official date -> proposed date
+    elif r["kind"] == "edit" and t and r["status"] == "pending":
         out["changes"] = diff_task(t, {k: v for k, v in data.items() if k != "target"}, data.get("target"))
     elif r["kind"] == "edit":
         out["changes"] = data.get("_applied", [])
@@ -1245,7 +1273,7 @@ def api_request_approve(h, rid):
         else:
             data = json.loads(r["data"])
             target = data.pop("target", None)
-            applied = diff_task(t, data, target)
+            applied = diff_task(t, data, target) if data else [["target", t["target"], target]]
             field_changes = [c for c in applied if c[0] != "target"]
             if field_changes:
                 write_fields(h, t["id"], data, r["by_user"])
@@ -1268,6 +1296,7 @@ def api_request_reject(h, rid):
             h.con.execute("DELETE FROM tasks WHERE id=? AND approved=0", (r["task_id"],))
         else:
             log(h, r["task_id"], "reject", {"of": r["by_user"], "note": note})
+            drop_proposal(h, r)
         h.con.execute("UPDATE change_requests SET status='rejected', note=?, decided_by=?, decided_at=? WHERE id=?",
                       (note, h.user["id"], now_iso(), r["id"]))
     return {"ok": True}
@@ -1283,6 +1312,8 @@ def api_request_cancel(h, rid):
     with Tx(h.con):
         if r["kind"] == "create":
             h.con.execute("DELETE FROM tasks WHERE id=? AND approved=0", (r["task_id"],))
+        else:
+            drop_proposal(h, r)
         h.con.execute("UPDATE change_requests SET status='cancelled', decided_by=?, decided_at=? WHERE id=?", (h.user["id"], now_iso(), r["id"]))
     return {"ok": True}
 

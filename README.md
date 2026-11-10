@@ -11,14 +11,15 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Roles, enforced by the server**
   | Role | Can do |
   |---|---|
-  | Member | See their team's tasks; add tasks they lead; change only tasks where they are a **Lead Engineer**. Every new task and every change waits for the team lead's **approval**. Track their requests under *My Requests*. Support engineers see a task but can't change it. |
-  | Team lead | Change any task in their team directly; **approve or reject** members' new tasks and changes (with a reason); set **target dates**; see the **KPI dashboard**; invite and remove members; edit categories, customers and KPI settings |
+  | Member | See their team's tasks; add tasks they lead; update the details of tasks where they are a **Lead Engineer** (saved straight away). A new or changed **target date** waits for the team lead's **approval**; they follow it under *My Requests*. Support engineers see a task but can't change it. |
+  | Team lead | Change any task in their team directly; **approve or reject** proposed target dates (with a reason); see the **KPI dashboard**; invite and remove members; edit categories, customers and KPI settings |
   | Administrator | Everything, on every team; create teams; add team leads |
 - **Teams are separate.** People see only the teams they belong to: no tasks, history, KPI or export
   from any other team. **One person can belong to several teams** with one login: a lead adds them
   by their existing login, or they accept the new team's invite with "I already have an account",
   then switch teams at the top of the page. Their role can differ per team.
-- **KPI counts approved tasks only.** A member's new task joins the KPI once the lead approves it.
+- **Target dates.** Until the lead approves, a member's proposed date on a task with no official target
+  shows as "awaiting lead"; on a task with an official target, the official date stays in force.
 - **Multiple teams.** Each team has its own people, categories, customers and KPI settings.
 - **Daily tasks.** Status is calculated from the target and actual dates, as in the workbook:
   On-Going, Delay, No Target, Completed Early, Completed On Time, Completed Late.

@@ -275,7 +275,7 @@ function taskTable(list, archive) {
       h("td", { class: "mono nowrap" }, fmt(t.effTarget), t.pending ? h("span", { class: "pending", text: "awaiting lead" }) : null),
       h("td", { class: "mono nowrap", text: fmt(t.actualDate) }),
       h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status }),
-        !t.approved ? h("span", { class: "pending", text: "new · awaiting approval" }) : t.changePending ? h("span", { class: "pending", text: "changes awaiting approval" }) : null))))));
+        !t.approved ? h("span", { class: "pending", text: "new · awaiting approval" }) : t.changePending ? h("span", { class: "pending", text: "new target awaiting approval" }) : null))))));
 }
 function tile(label, val, cls) { return h("div", { class: "tile " + (cls || "") }, h("span", { class: "lbl", text: label }), h("b", { text: val })); }
 function exportBtn() {
@@ -343,11 +343,10 @@ function taskSheet(t) {
   const ro = t ? !t.canEdit : !(lead || mk);
   const myReq = t?.request?.mine ? t.request : null;
   const othersPending = t && t.changePending && !myReq;
-  const needsApproval = !lead;
-  // a member who already sent changes sees (and can revise) their proposal instead of the current values
-  const src = myReq ? { ...t, ...myReq.data, startDate: myReq.data.start_date, actualDate: myReq.data.actual_date, effTarget: myReq.data.target } : t;
+  // details save straight away; a member's proposed target date waits for the lead, so show their proposal in the date field
+  const src = myReq && myReq.data.target ? { ...t, effTarget: myReq.data.target } : t;
   const T = src || { category: "", title: "", progress: "", percent: 0, urgency: "Medium", customer: "", lead: mk ? [mk] : [], support: [], startDate: S.today, effTarget: "", actualDate: "" };
-  const locked = ro || (othersPending && !lead);
+  const locked = ro;
   const fCat = h("select", { id: "t-cat", disabled: locked }, h("option", { value: "", text: "Choose…" }), tm.categories.map(c => h("option", { value: c, text: c })));
   fCat.value = T.category || "";
   const fTitle = h("input", { type: "text", id: "t-title", value: T.title, disabled: locked, maxlength: "200", placeholder: "e.g. Quarterly health check" });
@@ -362,17 +361,17 @@ function taskSheet(t) {
   const fLead = peopleToggles("t-lead", T.lead, locked), fSup = peopleToggles("t-sup", T.support, locked);
   const fStart = h("input", { type: "date", id: "t-start", value: T.startDate || "", disabled: locked });
   const fActual = h("input", { type: "date", id: "t-actual", value: T.actualDate || "", max: S.today, disabled: locked });
-  const fTarget = h("input", { type: "date", id: "t-target", value: T.effTarget || "", disabled: locked });
+  const fTarget = h("input", { type: "date", id: "t-target", value: T.effTarget || "", disabled: locked || (othersPending && !lead) });
   const help = lead ? "Saving sets the official target date. Changes are logged."
-    : t?.target ? "Official target set by your team lead. A new date needs their approval." : "Your proposed target. Your team lead approves it.";
+    : t?.target ? "Official target " + fmt(t.target) + ". A new date needs your team lead's approval." : "Your proposed target. Your team lead approves it.";
   const banners = [];
   if (ro) banners.push(h("div", { class: "note", text: "You can view this task. Only its Lead Engineer and the team lead can change it." }));
-  if (t && !t.approved) banners.push(h("div", { class: "note warn", text: lead ? "New task waiting for approval. Review it on the Approvals tab." : "This new task is waiting for your team lead's approval. You can still adjust it." }));
-  if (myReq) banners.push(h("div", { class: "note warn", text: "Your changes from " + fmtDT(myReq.at) + " are waiting for your team lead. The form shows what you sent; saving again replaces it." }));
-  if (othersPending && !lead) banners.push(h("div", { class: "note warn", text: "Another engineer's changes to this task are waiting for the team lead. You can edit it again once they're reviewed." }));
-  if (lead && t?.request) banners.push(h("div", { class: "note warn" }, "An engineer proposed changes to this task. ",
+  if (t && t.approved === false) banners.push(h("div", { class: "note warn", text: lead ? "New task waiting for approval. Review it on the Approvals tab." : "This new task is waiting for your team lead's approval. You can still adjust it." }));
+  if (myReq) banners.push(h("div", { class: "note warn", text: "Your new target date (" + fmt(myReq.data.target) + ", sent " + fmtDT(myReq.at) + ") is waiting for your team lead. Proposing another date replaces it." }));
+  if (othersPending && !lead) banners.push(h("div", { class: "note warn", text: "Another engineer proposed a new target date for this task. You can still update the details." }));
+  if (lead && t?.request) banners.push(h("div", { class: "note warn" }, "An engineer proposed a new target date (" + fmt(t.request.data.target) + "). ",
     h("button", { class: "btn small", type: "button", text: "Review in Approvals", onclick: () => { closeSheet(); S.view = "approvals"; render(); } })));
-  if (!isNew && needsApproval && !ro && t.approved && !othersPending && !myReq) banners.push(h("p", { class: "muted small m0", text: "Your changes go to your team lead for approval before they show for everyone." }));
+  if (!lead && !ro) banners.push(h("p", { class: "muted small m0", text: "Your changes to the details save straight away. A new target date needs your team lead's approval." }));
   const hist = h("div", { class: "hist" });
   if (t) loadHistory(t, hist);
   const body = [dl, ...banners,
@@ -388,7 +387,7 @@ function taskSheet(t) {
     h("label", { class: "field w50" }, h("span", { text: "Actual (completed) date" }), fActual),
     t ? h("p", { class: "muted small m0", text: "Status: " + t.status + (t.updatedAt ? " · last updated " + fmtDT(t.updatedAt) : "") }) : null,
     hist];
-  const saveLabel = lead ? (isNew ? "Add task" : "Save changes") : (isNew ? "Send for approval" : (t && !t.approved ? "Save changes" : "Send for approval"));
+  const saveLabel = isNew ? "Add task" : "Save changes";
   const save = h("button", { class: "btn primary", text: saveLabel, disabled: locked, onclick: async () => {
     if (!fTitle.value.trim()) { toast("Give the task a name."); return fTitle.focus(); }
     if (!fCat.value) { toast("Choose a category."); return fCat.focus(); }
@@ -402,7 +401,7 @@ function taskSheet(t) {
       const r = isNew ? await api("POST", "/api/teams/" + S.teamId + "/tasks", data) : await api("PUT", "/api/tasks/" + t.id, data);
       closeSheet();
       if (r.changed === false) toast("No changes to save");
-      else if (r.pending && (isNew || t.approved)) toast("Sent to your team lead for approval");
+      else if (r.pending) toast((isNew ? "Task added. " : "Saved. ") + "The target date is waiting for your team lead's approval.");
       else toast(isNew ? "Task added" : "Changes saved");
       reloadTeam();
     } catch (e) { save.disabled = false; toast(e.message); }
@@ -451,15 +450,16 @@ async function loadHistory(t, box) {
 function changeLines(changes) {
   return (changes || []).map(([f, a, b]) => h("div", { text: f === "progress" ? "Updated the progress notes" : (LOG_LABEL[f] || f) + ": " + describe(f, a) + " → " + describe(f, b) }));
 }
+function reqKind(r) { return r.kind === "create" ? "New task" : (r.changes || []).every(c => c[0] === "target") ? "Target date" : "Changes"; }
 function requestTitle(r) { return "#" + String(r.no || "").padStart(3, "0") + " " + (r.title || "(deleted task)"); }
 function viewApprovals(main) {
   const list = h("div", { class: "grid2" });
   main.append(h("div", { class: "row between" }, h("h2", { text: team().name + " · approvals" }),
-    h("span", { class: "muted", text: "Engineers' new tasks and changes wait here until you approve them." })), list);
+    h("span", { class: "muted", text: "Target dates proposed by engineers wait here until you approve them." })), list);
   async function load() {
     try {
       const r = await api("GET", "/api/teams/" + S.teamId + "/requests");
-      if (!r.requests.length) { list.replaceChildren(h("div", { class: "panel" }, h("p", { class: "muted m0", text: "Nothing waiting. New requests appear here when engineers add or change tasks." }))); return; }
+      if (!r.requests.length) { list.replaceChildren(h("div", { class: "panel" }, h("p", { class: "muted m0", text: "Nothing waiting. Requests appear here when an engineer proposes a target date." }))); return; }
       list.replaceChildren(...r.requests.map(rq => {
         const note = h("input", { type: "text", id: "rej-" + rq.id, maxlength: "500", placeholder: "Reason (shown to " + rq.by + ")" });
         const rejectRow = h("div", { class: "row", hidden: true }, note,
@@ -471,7 +471,7 @@ function viewApprovals(main) {
              rq.task.progress ? h("div", { class: "muted", text: rq.task.progress }) : null]
           : changeLines(rq.changes);
         return h("div", { class: "panel" },
-          h("div", { class: "row between" }, h("h3", { text: requestTitle(rq) }), h("span", { class: "pill " + (rq.kind === "create" ? "info" : "warn"), text: rq.kind === "create" ? "New task" : "Changes" })),
+          h("div", { class: "row between" }, h("h3", { text: requestTitle(rq) }), h("span", { class: "pill " + (rq.kind === "create" ? "info" : "warn"), text: reqKind(rq) })),
           h("div", { class: "muted small", text: rq.by + " · " + fmtDT(rq.at) }),
           h("div", { class: "hist" }, detail),
           h("div", { class: "row" },
@@ -496,7 +496,7 @@ const REQ_STATUS = { pending: ["Waiting for approval", "warn"], approved: ["Appr
 function viewRequests(main) {
   const list = h("div");
   main.append(h("div", { class: "row between" }, h("h2", { text: team().name + " · my requests" }),
-    h("span", { class: "muted", text: "Your new tasks and changes, and what your team lead decided (last 30 days)." })), list);
+    h("span", { class: "muted", text: "Target dates you proposed, and what your team lead decided (last 30 days)." })), list);
   async function load() {
     try {
       const r = await api("GET", "/api/teams/" + S.teamId + "/requests");
@@ -506,8 +506,9 @@ function viewRequests(main) {
         h("tbody", {}, r.requests.map(rq => {
           const [label, cls] = REQ_STATUS[rq.status] || [rq.status, ""];
           return h("tr", {},
-            h("td", {}, h("div", { class: "task-title", text: requestTitle(rq) }), rq.kind === "edit" ? h("div", { class: "hist" }, changeLines(rq.changes)) : null),
-            h("td", { text: rq.kind === "create" ? "New task" : "Changes" }),
+            h("td", {}, h("div", { class: "task-title", text: requestTitle(rq) }), rq.kind === "edit" ? h("div", { class: "hist" },
+              reqKind(rq) === "Target date" && rq.proposedTarget ? h("div", { text: "Proposed target date: " + fmt(rq.proposedTarget) }) : changeLines(rq.changes)) : null),
+            h("td", { text: reqKind(rq) }),
             h("td", { class: "mono nowrap", text: fmtDT(rq.at) }),
             h("td", {}, h("span", { class: "pill " + cls, text: label }), rq.decidedBy ? h("div", { class: "muted small", text: rq.decidedBy + " · " + fmtDT(rq.decidedAt) }) : null),
             h("td", { text: rq.note || "" }),
