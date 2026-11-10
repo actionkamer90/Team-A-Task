@@ -1,0 +1,6 @@
+.git
+data
+tests
+Team-A-Task
+**/__pycache__
+.env

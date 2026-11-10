@@ -1,0 +1,20 @@
+# Settings come from .env next to this file (copy .env.example). Docker Compose reads it automatically.
+services:
+  app:
+    build: .
+    image: team-task-tracker:latest
+    container_name: team-task-tracker
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Kuala_Lumpur}
+      TT_BASE_URL: ${TT_BASE_URL:-}
+      TT_COOKIE_SECURE: ${TT_COOKIE_SECURE:-0}
+      TT_TRUST_PROXY: ${TT_TRUST_PROXY:-0}
+      TT_ARCHIVE_DAYS: ${TT_ARCHIVE_DAYS:-2}
+    ports:
+      - "${TT_PUBLISH:-8080}:8080"
+    volumes:
+      - tracker-data:/data
+
+volumes:
+  tracker-data:

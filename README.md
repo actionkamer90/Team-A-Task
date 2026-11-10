@@ -1,21 +1,123 @@
-# Team A Task Tracker
+# Team Task Tracker
 
-A shared daily task tracker for Team A. It replaces the Excel template
-`Team_A_Daily_Task_Tracker_Template_2026.xlsm`.
+A self-hosted daily task tracker for multiple teams. It replaces the Excel template
+`Team_A_Daily_Task_Tracker_Template_2026.xlsm` and runs on your own server with Docker.
 
 ## Features
 
-- **Daily tasks**: add, edit, filter and sort tasks. Status is calculated
-  automatically from the target and actual dates (On-Going, Delay,
-  Completed Early, Completed On Time, Completed Late).
-- **Workload**: open tasks per engineer, split into lead and support.
-- **KPI scorecard**: weighted score = On-time % × 80% + Early % × 20%, with
-  ratings Excellent (≥ 90%), Good (≥ 70%), Needs Improvement (≥ 60%) and
-  At Risk.
-- **Archive**: tasks completed 2 or more days ago move to the archive, the
-  same rule as the old `ArchiveOldCompletedTasks` macro.
-- **Team setup**: manage engineers, customers and KPI weights.
+- **Logins with invite links.** Nobody can sign up on their own. A team lead creates a one-time
+  invite link (valid 7 days) and sends it privately. The person picks a login and password.
+  Forgotten passwords are handled the same way, with a reset link from the lead.
+- **Roles, enforced by the server**
+  | Role | Can do |
+  |---|---|
+  | Member | Add tasks; update tasks they lead or support; propose a target date |
+  | Team lead | Everything a member can, on every task in their team; set and change **target dates** (every change is logged); see the **KPI dashboard**; invite and remove members; edit categories, customers and KPI settings |
+  | Administrator | Everything, on every team; create teams; add team leads |
+- **Multiple teams.** Each team has its own people, categories, customers and KPI settings. People
+  only see the teams they belong to. One account can belong to several teams.
+- **Daily tasks.** Status is calculated from the target and actual dates, as in the workbook:
+  On-Going, Delay, No Target, Completed Early, Completed On Time, Completed Late.
+- **Archive.** Tasks move to the Archive 2 days after their actual date (the old
+  `ArchiveOldCompletedTasks` rule; change with `TT_ARCHIVE_DAYS`).
+- **KPI dashboard (leads only).** KPI = On-time % × 80% + Early % × 20%. Each lead and support
+  involvement counts individually. Ratings: Excellent ≥ 90%, Good ≥ 70%, Needs Improvement ≥ 60%,
+  otherwise At Risk. Weights and thresholds are editable per team.
+- **Change history** on every task: who changed what, and when.
+- **Export to Excel (.xlsx)**: Daily Task Tracker and Archive sheets for everyone, plus KPI Scorecard
+  and Lead Tasks by Category for leads.
 
-## Status
+No external services and no Python packages: Python standard library + SQLite. The browser loads
+nothing from the internet.
 
-This repository is new. The application code has not been added yet.
+## Install on the server
+
+Needs Docker with the Compose plugin.
+
+```bash
+git clone https://github.com/actionkamer90/Team-A-Task.git
+cd Team-A-Task
+cp .env.example .env        # set TT_BASE_URL to the address people will use, e.g. http://ddtaskserver:8080
+docker compose up -d --build
+docker compose logs app     # shows a one-time link to create the administrator account
+```
+
+Open the link from the logs, create the administrator account, then:
+
+1. **All Teams → Create team** (or import the workbook data, below).
+2. **Team & Invites → Add person** for the team lead, choose *Team lead*, then **Create invite link**
+   and send it to them.
+3. The lead invites their own members the same way.
+
+### Import the Excel workbook data
+
+Each team can bring its existing Daily Task Tracker workbook (`.xlsm` or `.xlsx`, 2026 template).
+The import reads the *Daily Task Tracker*, *Archive* and *Customer* sheets, creates the team, adds
+everyone named as a Lead or Support Engineer, and marks the names you pass with `--lead` as team
+leads. Macros are never run.
+
+**Never commit a workbook to this repository**: it is public, and the workbooks contain customer
+names and task notes. Copy the file straight to the server (for example with WinSCP or `scp`), then:
+
+```bash
+docker compose cp YourTeamWorkbook.xlsm app:/data/import.xlsm
+docker compose exec app python server.py import-xlsm /data/import.xlsm --team "Team Automation" --lead "Lead Name" --dry-run
+docker compose exec app python server.py import-xlsm /data/import.xlsm --team "Team Automation" --lead "Lead Name"
+docker compose exec app rm /data/import.xlsm
+```
+
+The `--dry-run` line only checks the workbook: it lists the people it found and any problems, such
+as a date that doesn't exist. An import only creates a new team; it refuses to run if a team with
+that name already exists.
+
+## Update to a new version
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+Data lives in the Docker volume `tracker-data` and survives updates and rebuilds.
+
+## Everyday admin
+
+| Task | Command |
+|---|---|
+| Forgot the administrator password | `docker compose exec app python server.py admin-link` (prints a reset link) |
+| Back up the database | `docker compose exec app python server.py backup /data/backup.db && docker compose cp app:/data/backup.db ./backups/tracker-$(date +%F).db` |
+| See logs | `docker compose logs -f app` |
+
+Back up regularly, for example with a daily cron job running the backup command.
+
+## HTTPS
+
+Invite links and passwords should travel over HTTPS. Put a reverse proxy (nginx, Caddy, IIS)
+with a certificate in front of the app, then set in `.env`:
+
+```
+TT_BASE_URL=https://tasks.example.com
+TT_PUBLISH=127.0.0.1:8080
+TT_COOKIE_SECURE=1
+TT_TRUST_PROXY=1
+```
+
+Without HTTPS, the app still works on your internal network, but anyone who can watch that network
+traffic could read passwords and session cookies.
+
+## Security notes
+
+- Passwords are hashed with scrypt; minimum 10 characters.
+- Sessions are random tokens in `HttpOnly`, `SameSite=Strict` cookies, valid 14 days. Changing or
+  resetting a password logs out other sessions.
+- Invite and reset links are single-use, expire after 7 days, are stored only as hashes, and are kept
+  in the URL fragment so they never reach server logs.
+- Login is rate limited (5 failures per login per 15 minutes).
+- Every permission is checked on the server. Hiding a button in the browser is never the protection.
+- Strict Content-Security-Policy; the container runs as a non-root user.
+
+## Development
+
+```bash
+python app/server.py serve                    # http://localhost:8080, database in ./data
+python -m unittest discover -s tests -v       # API tests (standard library only)
+```
