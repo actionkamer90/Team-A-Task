@@ -136,3 +136,15 @@ tr.total td{font-weight:600;background:var(--surface-2)}
 .small{font-size:12px} .m0{margin:0} .bad-text{color:var(--bad)} .warn-text{color:var(--warn)}
 @media (prefers-reduced-motion:no-preference){.sheet{animation:slide .18s ease-out}@keyframes slide{from{transform:translateX(24px);opacity:.6}}}
 .update-bar{position:sticky;top:0;z-index:30;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;padding:8px 16px;background:var(--warn-soft);color:var(--warn);font-weight:500;border-bottom:1px solid var(--line)}
+/* sortable task tables */
+.sortbar{display:flex;gap:8px;align-items:end;justify-content:flex-end;margin-bottom:10px;flex-wrap:wrap}
+.sortbar .field{flex:0 1 230px}
+th.sortable{padding:0}
+th.sortable button{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:4px;width:100%;padding:8px 10px;cursor:pointer;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit;white-space:nowrap}
+th.sortable.num button{justify-content:flex-end}
+th.sortable button:hover{color:var(--fg)}
+th.sortable button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+th.sortable .arrow{opacity:.35;font-size:12px}
+th.sorted{color:var(--fg)}
+th.sorted .arrow{opacity:1;color:var(--accent)}
+@media (max-width:600px){.sortbar{justify-content:stretch}.sortbar .field{flex:1 1 auto}}
