@@ -5,7 +5,7 @@ const { CATEGORIES: CATS, URGENCIES: URG, STATUSES, status, today, addDays, diff
 
 const S = {
   me: null, tasks: new Map(), cfg: { ...TT.DEFAULT_SETTINGS }, users: [], loaded: false, error: null,
-  view: 'tasks', f: { q: '', eng: '', status: 'open', cat: '', urg: '' }, sort: { k: 'target', d: 1 }, aq: '',
+  view: 'tasks', f: { q: '', eng: '', status: 'open', cat: '', urg: '' }, sort: { k: 'target', d: 1 }, asort: { k: 'actual', d: -1 }, aq: '',
   kpiFrom: new Date().getFullYear() + '-01-01', kpiTo: new Date().getFullYear() + '-12-31',
   edit: null, draft: null, confirmDel: false, confirmArchive: false, activity: [], saving: false,
 };
@@ -13,8 +13,10 @@ try {
   const v = JSON.parse(localStorage.getItem('tt-prefs') || '{}');
   if (v.f) Object.assign(S.f, v.f);
   if (v.kpiFrom) { S.kpiFrom = v.kpiFrom; S.kpiTo = v.kpiTo; }
+  if (v.sort && v.sort.k) S.sort = v.sort;
+  if (v.asort && v.asort.k) S.asort = v.asort;
 } catch (e) { /* ignore */ }
-const savePrefs = () => { try { localStorage.setItem('tt-prefs', JSON.stringify({ f: S.f, kpiFrom: S.kpiFrom, kpiTo: S.kpiTo })); } catch (e) { /* ignore */ } };
+const savePrefs = () => { try { localStorage.setItem('tt-prefs', JSON.stringify({ f: S.f, kpiFrom: S.kpiFrom, kpiTo: S.kpiTo, sort: S.sort, asort: S.asort })); } catch (e) { /* ignore */ } };
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -134,13 +136,46 @@ function filtered() {
   if (f.cat) rows = rows.filter((t) => t.category === f.cat);
   if (f.urg) rows = rows.filter((t) => t.urgency === f.urg);
   if (q) rows = rows.filter((t) => [t.title, t.customer, t.progress, t.lead.join(' '), t.support.join(' '), t.no].join(' ').toLowerCase().includes(q));
-  const k = S.sort.k; const d = S.sort.d; const ur = (u) => URG.indexOf(u);
-  rows.sort((a, b) => {
-    let x; let y;
-    if (k === 'urgency') { x = ur(a.urgency); y = ur(b.urgency); } else if (k === 'pct') { x = a.pct; y = b.pct; } else if (k === 'no') { x = a.no; y = b.no; } else if (k === 'status') { x = STATUSES.indexOf(status(a)); y = STATUSES.indexOf(status(b)); } else { x = a[k] || '9999'; y = b[k] || '9999'; }
-    return ((x < y ? -1 : x > y ? 1 : 0) * d) || (a.no - b.no);
+  return sortRows(rows, S.sort);
+}
+
+// ---------- sorting (Daily tasks and Archive) ----------
+const SORTS = {
+  no: { label: 'Task no', get: (t) => t.no },
+  category: { label: 'Category', get: (t) => t.category.toLowerCase() },
+  title: { label: 'Task name', get: (t) => t.title.toLowerCase() },
+  customer: { label: 'Customer', get: (t) => (t.customer || '').toLowerCase() },
+  updated: { label: 'Last updated', get: (t) => t.updatedAt, desc: true },
+  pct: { label: 'Percentage done', get: (t) => t.pct, desc: true },
+  urgency: { label: 'Urgency', get: (t) => URG.indexOf(t.urgency), desc: true },
+  lead: { label: 'Lead engineer', get: (t) => (t.lead[0] || '').toLowerCase() },
+  start: { label: 'Start date', get: (t) => t.start },
+  target: { label: 'Target date', get: (t) => t.target },
+  actual: { label: 'Completed date', get: (t) => t.actual, desc: true },
+  status: { label: 'Status', get: (t) => STATUSES.indexOf(status(t)) },
+};
+const TASK_SORTS = ['target', 'urgency', 'status', 'updated', 'pct', 'no', 'title', 'customer', 'category', 'lead', 'start'];
+const ARCHIVE_SORTS = ['actual', 'target', 'urgency', 'status', 'no', 'title', 'customer', 'category', 'lead', 'start', 'updated'];
+function sortRows(rows, sort) {
+  const def = SORTS[sort.k] || SORTS.no;
+  const empty = (v) => v === null || v === undefined || v === '' || v === -1;
+  return rows.sort((a, b) => {
+    const x = def.get(a); const y = def.get(b);
+    if (empty(x) !== empty(y)) return empty(x) ? 1 : -1; // blanks always last
+    const c = typeof x === 'string' ? x.localeCompare(y) : x - y;
+    return (c * sort.d) || (a.no - b.no);
   });
-  return rows;
+}
+const sortKey = (tab) => (tab === 'archive' ? 'asort' : 'sort');
+function setSort(tab, k, dir) {
+  const cur = S[sortKey(tab)];
+  S[sortKey(tab)] = dir ? { k, d: dir } : cur.k === k ? { k, d: -cur.d } : { k, d: SORTS[k].desc ? -1 : 1 };
+  savePrefs(); render();
+}
+function sortBar(tab, keys) {
+  const s = S[sortKey(tab)];
+  return `<label class="sortby"><span>Sort by</span><select id="sortBy-${tab}" data-sorttab="${tab}" aria-label="Sort by">${keys.map((k) => opt(k, SORTS[k].label, s.k)).join('')}</select></label>
+    <button type="button" class="sortdir" data-sortdir="${tab}" aria-label="Sort direction: ${s.d > 0 ? 'ascending' : 'descending'}. Click to reverse.">${s.d > 0 ? '↑ Ascending' : '↓ Descending'}</button>`;
 }
 function dueTxt(t) {
   if (isDone(t) || !t.target) return '';
@@ -164,7 +199,10 @@ function taskRows(rows, archive) {
     <td><span class="pill ${cls('st', st)}">${st}</span></td></tr>`;
   }).join('');
 }
-const th = (k, label) => { const a = S.sort.k === k ? (S.sort.d > 0 ? ' ↑' : ' ↓') : ''; return `<th class="sortable" data-sort="${k}">${label}${a}</th>`; };
+const th = (tab, k, label) => {
+  const s = S[sortKey(tab)]; const on = s.k === k;
+  return `<th class="sortable${on ? ' sorted' : ''}" aria-sort="${on ? (s.d > 0 ? 'ascending' : 'descending') : 'none'}"><button type="button" data-sort="${k}" data-sorttab="${tab}" title="Sort by ${SORTS[k].label.toLowerCase()}">${label}<span class="arrow" aria-hidden="true">${on ? (s.d > 0 ? '↑' : '↓') : '↕'}</span></button></th>`;
+};
 const opt = (v, l, cur) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(l)}</option>`;
 const readyToArchive = () => TT.readyToArchive(all(), S.cfg.archiveAfterDays);
 
@@ -196,8 +234,9 @@ function vTasks() {
     <select id="fCat" aria-label="Category">${opt('', 'All categories', f.cat)}${CATS.map((s) => opt(s, s, f.cat)).join('')}</select>
     <select id="fUrg" aria-label="Urgency">${opt('', 'Any urgency', f.urg)}${URG.map((s) => opt(s, s, f.urg)).join('')}</select>
     ${f.q || f.eng || f.cat || f.urg || f.status !== 'open' ? '<button class="ghost" id="clr" type="button">Reset filters</button>' : ''}
+    <span class="sortgrp">${sortBar('tasks', TASK_SORTS)}</span>
   </div>
-  <div class="tbl"><table><thead><tr>${th('no', 'No')}${th('category', 'Category')}${th('title', 'Task / Customer')}<th>Latest progress</th>${th('pct', 'Done')}${th('urgency', 'Urgency')}<th>Lead + Support</th>${th('target', 'Target')}${th('status', 'Status')}</tr></thead>
+  <div class="tbl"><table><thead><tr>${th('tasks', 'no', 'No')}${th('tasks', 'category', 'Category')}${th('tasks', 'title', 'Task / Customer')}${th('tasks', 'updated', 'Latest progress')}${th('tasks', 'pct', 'Done')}${th('tasks', 'urgency', 'Urgency')}${th('tasks', 'lead', 'Lead + Support')}${th('tasks', 'target', 'Target')}${th('tasks', 'status', 'Status')}</tr></thead>
   <tbody>${taskRows(rows)}</tbody></table>${rows.length ? '' : `<div class="empty">No tasks match these filters.${act.length ? '' : canEdit() ? ' Add the first task with <b>+ New task</b>.' : ''}</div>`}</div>
   <p class="meta">${rows.length} of ${act.length} active tasks shown. Left edge marks High (amber) and Critical (red) urgency.</p>
   </div>`;
@@ -256,10 +295,10 @@ function vArchive() {
   let rows = all().filter((t) => t.archived);
   const total = rows.length;
   if (q) rows = rows.filter((t) => [t.title, t.customer, t.progress, t.lead.join(' '), t.support.join(' '), t.no, t.category].join(' ').toLowerCase().includes(q));
-  rows.sort((a, b) => ((b.actual || '') < (a.actual || '') ? -1 : 1));
-  return `<div class="stack"><div class="row between"><div><h2>Archive</h2><p class="sub">${total} finished tasks. Open one to read its history${canEdit() ? ' or move it back to Daily tasks' : ''}.</p></div><a class="btn" href="/api/export.csv?which=archive">Export CSV</a></div>
-  <div class="filters"><input type="search" id="aq" placeholder="Search archived tasks…" value="${esc(S.aq)}" aria-label="Search archive"></div>
-  <div class="tbl"><table><thead><tr><th>No</th><th>Category</th><th>Task / Customer</th><th>Progress notes</th><th>Done</th><th>Urgency</th><th>Lead + Support</th><th>Completed</th><th>Status</th></tr></thead><tbody>${taskRows(rows, true)}</tbody></table>${rows.length ? '' : `<div class="empty">${total ? 'No archived tasks match.' : 'Nothing archived yet. Finished tasks move here from Daily tasks.'}</div>`}</div></div>`;
+  sortRows(rows, S.asort);
+  return `<div class="stack"><div class="row between"><div><h2>Archive</h2><p class="sub">${rows.length === total ? total : rows.length + ' of ' + total} finished tasks. Open one to read its history${canEdit() ? ' or move it back to Daily tasks' : ''}.</p></div><a class="btn" href="/api/export.csv?which=archive">Export CSV</a></div>
+  <div class="filters"><input type="search" id="aq" placeholder="Search archived tasks…" value="${esc(S.aq)}" aria-label="Search archive"><span class="sortgrp">${sortBar('archive', ARCHIVE_SORTS)}</span></div>
+  <div class="tbl"><table><thead><tr>${th('archive', 'no', 'No')}${th('archive', 'category', 'Category')}${th('archive', 'title', 'Task / Customer')}${th('archive', 'updated', 'Progress notes')}${th('archive', 'pct', 'Done')}${th('archive', 'urgency', 'Urgency')}${th('archive', 'lead', 'Lead + Support')}${th('archive', 'actual', 'Completed')}${th('archive', 'status', 'Status')}</tr></thead><tbody>${taskRows(rows, true)}</tbody></table>${rows.length ? '' : `<div class="empty">${total ? 'No archived tasks match.' : 'Nothing archived yet. Finished tasks move here from Daily tasks.'}</div>`}</div></div>`;
 }
 
 function vSetup() {
@@ -379,10 +418,11 @@ async function saveSettings(next, msg) {
 
 // ---------- events ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('button,tr[data-no],li[data-no],th[data-sort]'); if (!t || !S.me) return;
+  const t = e.target.closest('button,tr[data-no],li[data-no]'); if (!t || !S.me) return;
   if (t.id === 'newBtn') { openTask(null); return; }
   if (t.matches('tr[data-no],li[data-no]') && !t.closest('.drawer')) { openTask(t.dataset.no); return; }
-  if (t.matches('th[data-sort]')) { const k = t.dataset.sort; S.sort = S.sort.k === k ? { k, d: -S.sort.d } : { k, d: 1 }; render(); return; }
+  if (t.dataset.sort) { setSort(t.dataset.sorttab, t.dataset.sort); return; }
+  if (t.dataset.sortdir) { const tab = t.dataset.sortdir; const s = S[sortKey(tab)]; setSort(tab, s.k, -s.d); return; }
   if (t.dataset.st) { S.f.status = S.f.status === t.dataset.st && t.dataset.st !== 'open' ? 'open' : t.dataset.st; savePrefs(); render(); return; }
   if (t.id === 'clr') { S.f = { q: '', eng: '', status: 'open', cat: '', urg: '' }; savePrefs(); render(); return; }
   if (t.id === 'archBtn') { S.confirmArchive = true; render(); return; }
@@ -448,6 +488,7 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', async (e) => {
   const el = e.target; const id = el.id; const m = { fEng: 'eng', fSt: 'status', fCat: 'cat', fUrg: 'urg' };
   if (m[id]) { S.f[m[id]] = el.value; savePrefs(); render(); return; }
+  if (el.dataset.sorttab && el.tagName === 'SELECT') { setSort(el.dataset.sorttab, el.value, SORTS[el.value].desc ? -1 : 1); return; }
   if (id === 'kFrom' || id === 'kTo') { if (id === 'kFrom') S.kpiFrom = el.value; else S.kpiTo = el.value; savePrefs(); render(); return; }
   if (el.dataset.urole || el.dataset.uactive) {
     const uid = el.dataset.urole || el.dataset.uactive;
