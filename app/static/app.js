@@ -52,7 +52,7 @@ async function api(method, path, body) {
 }
 
 const DEFAULT_CATS = ["Pre-Sales", "Project", "Tickets", "Internal"];
-const STATUS_CLASS = { "Delay": "bad", "On-Going": "info", "No Target": "warn", "Completed Early": "ok", "Completed On Time": "ok", "Completed Late": "warn", "Completed": "ok" };
+const STATUS_CLASS = { "Delay": "bad", "On-Going": "info", "No Target": "warn", "Completed Early": "early", "Completed On Time": "ok", "Completed Late": "warn", "Completed": "ok" };
 const RATING_CLASS = { "Excellent": "ok", "Good": "info", "Needs Improvement": "warn", "At Risk": "bad", "No Data": "" };
 
 /* ---------- state ---------- */
@@ -438,13 +438,14 @@ function taskSheet(t) {
   const fUrg = h("select", { id: "t-urg", disabled: locked }, tm.urgencies.map(u => h("option", { value: u, text: u }))); fUrg.value = T.urgency;
   const fPct = h("input", { type: "number", id: "t-pct", min: "0", max: "100", step: "5", value: String(T.percent || 0), disabled: locked });
   const fProg = h("textarea", { id: "t-prog", disabled: locked, maxlength: "8000", placeholder: "Latest progress, one update per line" }); fProg.value = T.progress || "";
-  const addNote = h("button", { type: "button", class: "btn small", disabled: locked, text: "Add dated update", onclick: () => {
-    const d = S.today; fProg.value = d.slice(8, 10) + "/" + d.slice(5, 7) + ": \n" + fProg.value; fProg.focus(); fProg.setSelectionRange(7, 7);
+  const addNote = h("button", { type: "button", class: "btn small", disabled: locked, text: "Add update", onclick: () => {
+    fProg.value = "\n" + fProg.value; fProg.focus(); fProg.setSelectionRange(0, 0);
   } });
   const fLead = peopleToggles("t-lead", T.lead, locked), fSup = peopleToggles("t-sup", T.support, locked);
   const fStart = h("input", { type: "date", id: "t-start", value: T.startDate || "", disabled: locked });
-  const fActual = h("input", { type: "date", id: "t-actual", value: T.actualDate || "", max: S.today, disabled: locked || (othersPending && !lead) });
-  const fTarget = h("input", { type: "date", id: "t-target", value: T.effTarget || "", disabled: locked || (othersPending && !lead) });
+  const archLock = !!t?.archived && !lead; // archived: only the team lead changes the completed and target dates
+  const fActual = h("input", { type: "date", id: "t-actual", value: T.actualDate || "", max: S.today, disabled: locked || archLock || (othersPending && !lead) });
+  const fTarget = h("input", { type: "date", id: "t-target", value: T.effTarget || "", disabled: locked || archLock || (othersPending && !lead) });
   const help = lead ? "Saving sets the official target date. Changes are logged."
     : t?.target ? "Official target " + fmt(t.target) + ". A new date needs your team lead's approval." : "Your proposed target. Your team lead approves it.";
   const banners = [];
@@ -454,14 +455,16 @@ function taskSheet(t) {
   if (othersPending && !lead) banners.push(h("div", { class: "note warn", text: "Another engineer's " + pendingLabel(t.pendingFields) + " is waiting for the team lead. You can still update the other details." }));
   if (lead && t?.request) banners.push(h("div", { class: "note warn" }, "An engineer proposed: " + proposalText(t.request.data) + ". ",
     h("button", { class: "btn small", type: "button", text: "Review in Approvals", onclick: () => { closeSheet(); S.view = "approvals"; render(); } })));
-  if (!lead && !ro) banners.push(h("p", { class: "muted small m0", text: "Your changes to the details save straight away. A new target date, or a completed date earlier than today, needs your team lead's approval." }));
+  if (archLock && !ro) banners.push(h("div", { class: "note", text: "This task is archived. Only the team lead can change its completed and target dates." }));
+  if (!lead && !ro && !archLock) banners.push(h("p", { class: "muted small m0", text: "Your changes to the details save straight away. A new target date, or a completed date earlier than today, needs your team lead's approval." }));
   const hist = h("div", { class: "hist" });
   if (t) loadHistory(t, hist);
   const body = [dl, ...banners,
     h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Category" }), fCat), h("label", { class: "field" }, h("span", { text: "Urgency" }), fUrg)),
     h("label", { class: "field" }, h("span", { text: "Main task / project" }), fTitle),
     h("label", { class: "field" }, h("span", { text: "Customer" }), fCust),
-    h("div", { class: "field" }, h("div", { class: "row between" }, h("span", { class: "lbl", text: "Task progress" }), addNote), fProg),
+    h("div", { class: "field" }, h("div", { class: "row between" }, h("span", { class: "lbl", text: "Task progress" }), addNote), fProg,
+      h("small", { class: "muted", text: "New or changed lines are signed with your name and the time when you save." })),
     h("label", { class: "field w160" }, h("span", { text: "Task percentage" }), fPct),
     h("div", { class: "field" }, h("span", { class: "lbl", text: "Lead engineer" }), fLead),
     h("div", { class: "field" }, h("span", { class: "lbl", text: "Support engineer" }), fSup),

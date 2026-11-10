@@ -26,7 +26,12 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Sorting.** On the Tracker and Archive, click any column header to sort by it (click again to
   reverse), or use the *Sort by* menu, which also works on phones. Each tab remembers its own sort.
 - **Archive.** Tasks move to the Archive 2 days after their actual date (the old
-  `ArchiveOldCompletedTasks` rule; change with `TT_ARCHIVE_DAYS`).
+  `ArchiveOldCompletedTasks` rule; change with `TT_ARCHIVE_DAYS`). On an archived task, only the team lead can change
+  the completed (actual) and target dates; members can still update the other details.
+- **Signed progress notes.** Every new or changed line in *Task progress* is signed with the name of the
+  person who saved it and the time, e.g. `Called customer — Bob Tan (10/11/2026 14:05)`.
+  Older lines keep their original signature.
+- **Status colours.** Completed Early shows in purple, Completed On Time in green.
 - **KPI dashboard (leads only).** KPI = On-time % × 80% + Early % × 20%. Each lead and support
   involvement counts individually. Ratings: Excellent ≥ 90%, Good ≥ 70%, Needs Improvement ≥ 60%,
   otherwise At Risk. Weights and thresholds are editable per team.

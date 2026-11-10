@@ -1057,6 +1057,22 @@ def parse_task(h, tid, body, team):
     return d
 
 
+SIG_RE = re.compile(r"\s+— [^—\n]{1,80} \(\d\d/\d\d/\d{4} \d\d:\d\d\)$")
+
+
+def sign_progress(old, new, name):
+    """Sign every progress line that is new or changed with who wrote it and when ("… — Name (dd/mm/yyyy hh:mm)").
+    Lines already in the old notes keep their signature; an edited line is re-signed by the person who edited it."""
+    have = set((old or "").splitlines())
+    stamp = dt.datetime.now().strftime("%d/%m/%Y %H:%M")  # server local time; set TZ in docker-compose
+    out = []
+    for line in (new or "").splitlines():
+        if line.strip() and line not in have:
+            line = SIG_RE.sub("", line.rstrip()) + " — %s (%s)" % (name, stamp)
+        out.append(line)
+    return "\n".join(out)
+
+
 def diff_task(t, d, target):
     changes = []
     for f, _ in TASK_FIELDS:
@@ -1101,6 +1117,7 @@ def api_task_create(h, tid):
     me = h.my_person(tid)
     if not lead and me["key"] not in d["lead"]:
         raise bad("Add yourself as a Lead Engineer. You can only manage tasks you lead.")
+    d["progress"] = sign_progress("", d["progress"], h.user["display_name"])
     backdated = None
     if not lead and d["actual_date"] and d["actual_date"] < today():
         backdated, d["actual_date"] = d["actual_date"], None
@@ -1151,6 +1168,12 @@ def api_task_update(h, task_id):
     lead = role in ("lead", "admin")
     if not lead and my_key not in d["lead"]:
         raise bad("Keep yourself as a Lead Engineer, or ask your team lead to hand the task over.")
+    if not lead and is_archived(t):
+        # archived tasks: only the team lead can change the completed and target dates
+        if d["actual_date"] != t["actual_date"] or target != (t["target"] or t["requested_target"]):
+            raise ApiError(403, "This task is archived. Only the team lead can change its completed or target date.")
+    if d["progress"] != t["progress"]:
+        d["progress"] = sign_progress(t["progress"], d["progress"], h.user["display_name"])
     changes = diff_task(t, d, target)
     if not changes:
         return {"ok": True, "changed": False}

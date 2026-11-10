@@ -281,7 +281,8 @@ class TrackerTest(unittest.TestCase):
         s, r, _ = M.req("PUT", "/api/tasks/%d" % tid, dict(self._body(t), percent=60, progress="halfway"))
         self.assertEqual((s, r["pending"]), (200, []))
         t = self._task(M, tid)
-        self.assertEqual((t["percent"], t["progress"]), (60, "halfway"))
+        self.assertEqual(t["percent"], 60)
+        self.assertRegex(t["progress"], r"^halfway — Bob \(\d\d/\d\d/\d{4} \d\d:\d\d\)$")  # signed
         self.assertFalse(t["changePending"])
 
         # details + new target in one save: details apply now, target waits
@@ -343,7 +344,7 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual((s, r["pending"]), (200, ["actual_date"]))
         t = self._task(M, tid)
         self.assertIsNone(t["actualDate"])
-        self.assertEqual(t["progress"], "done last week")
+        self.assertTrue(t["progress"].startswith("done last week — Bob ("))
         self.assertEqual(t["pendingFields"], ["actual_date"])
         rq = next(x for x in L.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == tid)
         self.assertEqual(rq["changes"], [["actual_date", None, last_week]])
@@ -508,6 +509,29 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(tuple(row), (60, "2026-05-09", "moved on"))
         self.assertEqual(con.execute("SELECT target FROM tasks WHERE team_id='sync-team' AND no=3").fetchone()[0], "2026-06-01")
         self.assertEqual(server.sync_team(con, "sync-team", newer)["updated"], [])  # running again changes nothing
+
+    def test_progress_lines_are_signed(self):
+        M = self.member
+        t = next(x for x in M.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if x["no"] == 3)  # Bob leads it
+        s, _, _ = M.req("PUT", "/api/tasks/%d" % t["id"], dict(self._body(t), progress="first note"))
+        self.assertEqual(s, 200)
+        first = self._task(M, t["id"])["progress"]
+        self.assertTrue(first.startswith("first note — Bob ("))
+        M.req("PUT", "/api/tasks/%d" % t["id"], dict(self._body(t), progress="second note\n" + first))
+        lines = self._task(M, t["id"])["progress"].split("\n")
+        self.assertTrue(lines[0].startswith("second note — Bob ("))
+        self.assertEqual(lines[1], first)  # older lines keep their signature
+
+    def test_member_cannot_change_dates_on_archived_task(self):
+        M, L = self.member, self.lead
+        t = next(x for x in M.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if x["no"] == 3)  # Bob leads, archived
+        self.assertTrue(t["archived"])
+        b = self._body(t)
+        self.assertEqual(M.req("PUT", "/api/tasks/%d" % t["id"], dict(b, actualDate="2026-03-14"))[0], 403)
+        self.assertEqual(M.req("PUT", "/api/tasks/%d" % t["id"], dict(b, target="2026-03-20"))[0], 403)
+        self.assertEqual(M.req("PUT", "/api/tasks/%d" % t["id"], dict(b, customer="Acme"))[0], 200)  # other details still save
+        self.assertEqual(L.req("PUT", "/api/tasks/%d" % t["id"], dict(b, target="2026-03-16"))[0], 200)  # the lead can
+        L.req("PUT", "/api/tasks/%d" % t["id"], dict(b, target="2026-03-10"))  # put it back for other tests
 
     # helpers
     def _task(self, cli, tid):
