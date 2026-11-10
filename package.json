@@ -1,0 +1,24 @@
+{
+  "name": "team-a-task",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shared daily task tracker for Team A, replacing the Excel template.",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\"",
+    "import-xlsx": "node --disable-warning=ExperimentalWarning scripts/import-xlsx.js",
+    "backup": "node --disable-warning=ExperimentalWarning scripts/backup.js"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "exceljs": "^4.4.0"
+  },
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/actionkamer90/Team-A-Task.git"
+  }
+}

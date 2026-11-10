@@ -1,0 +1,8 @@
+node_modules/
+data/
+import/
+.env
+*.xlsm
+*.xlsx
+*.db
+*.db-*

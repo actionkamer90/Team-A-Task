@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team A Task Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="login" id="loginView" hidden>
+  <form id="loginForm" autocomplete="on">
+    <h1>Team A Task Tracker</h1>
+    <p class="sub" style="margin:0">Sign in with the account your admin gave you.</p>
+    <label class="f">Username<input id="lUser" name="username" autocomplete="username" required></label>
+    <label class="f">Password<input id="lPass" name="password" type="password" autocomplete="current-password" required></label>
+    <p class="err" id="lErr" role="alert"></p>
+    <button class="primary" type="submit" id="lBtn">Sign in</button>
+  </form>
+</div>
+
+<div id="appView" hidden>
+  <header><div class="wrap">
+    <div class="hd">
+      <div class="brand"><h1>Team A Task Tracker</h1><span id="sync">connecting…</span></div>
+      <div class="who"><span>Signed in as <b id="whoName"></b> · <span id="whoRole"></span></span><button class="ghost" id="logoutBtn" type="button">Sign out</button></div>
+      <button class="primary" id="newBtn" type="button">+ New task</button>
+    </div>
+    <nav id="nav">
+      <a href="#tasks" data-v="tasks">Daily tasks</a>
+      <a href="#workload" data-v="workload">Workload</a>
+      <a href="#kpi" data-v="kpi">KPI scorecard</a>
+      <a href="#archive" data-v="archive">Archive</a>
+      <a href="#setup" data-v="setup">Team setup</a>
+    </nav>
+  </div></header>
+  <main class="wrap" id="app"><div class="empty">Loading the team's tasks…</div></main>
+  <div id="layer"></div>
+</div>
+
+<script src="logic.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
