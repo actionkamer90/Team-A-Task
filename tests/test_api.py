@@ -384,6 +384,27 @@ class TrackerTest(unittest.TestCase):
         tid, n_people, n_tasks = server.import_team(server.connect(), data)
         self.assertEqual((tid, n_people, n_tasks), ("team-workbook", 3, 2))
 
+    def test_link_existing_name_to_account_from_other_team(self):
+        """Cara is on Automation from the import (no account) and joins another team first, like Arif."""
+        A = self.admin
+        tid = A.req("POST", "/api/teams", {"name": "Team Legacy", "categories": ["Project"]})[1]["id"]
+        pid = A.req("POST", "/api/teams/%s/people" % tid, {"name": "Cara"})[1]["id"]
+        url = A.req("POST", "/api/teams/%s/people/%d/link" % (tid, pid))[1]["url"]
+        cara = Client()
+        self.assertEqual(cara.req("POST", "/api/invite/accept", {"token": link_token(url), "name": "Cara", "login": "cara", "password": "password-cara-1"})[0], 200)
+        self.assertEqual([t["id"] for t in cara.req("GET", "/api/me")[1]["teams"]], [tid])
+        auto_cara = next(p for p in A.req("GET", "/api/teams/automation")[1]["people"] if p["key"] == "cara")
+        self.assertFalse(auto_cara["joined"])
+        # a member can't link; a lead can; wrong login is refused
+        self.assertEqual(self.member.req("PUT", "/api/teams/automation/people/%d" % auto_cara["id"], {"login": "cara"})[0], 403)
+        self.assertEqual(self.lead.req("PUT", "/api/teams/automation/people/%d" % auto_cara["id"], {"login": "no-such"})[0], 400)
+        self.assertEqual(self.lead.req("PUT", "/api/teams/automation/people/%d" % auto_cara["id"], {"login": "cara"})[0], 200)
+        self.assertEqual(sorted(t["id"] for t in cara.req("GET", "/api/me")[1]["teams"]), sorted(["automation", tid]))
+        tasks = cara.req("GET", "/api/teams/automation/tasks")[1]["tasks"]
+        self.assertTrue(next(t for t in tasks if t["no"] == 4)["canEdit"])  # her imported task is now hers
+        # the same login can't be linked twice in one team
+        self.assertEqual(A.req("POST", "/api/teams/automation/people", {"name": "Cara again", "login": "cara"})[0], 400)
+
     def test_sync_from_newer_workbook(self):
         con = server.connect()
         base = {"team": {"id": "sync-team", "name": "Sync Team", "categories": ["Project"], "customers": ["Acme"]},

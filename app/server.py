@@ -902,8 +902,20 @@ def api_person_update(h, tid, pid):
     active = 1 if h.body.get("active", bool(p["active"])) else 0
     if not active and p["user_id"] == h.user["id"]:
         raise bad("You can't remove yourself from the team.")
+    uid = p["user_id"]
+    login = s_field(h.body, "login", 120).lower()
+    if login and not uid:
+        # link a name already on the team (e.g. from an Excel import) to the account the person uses in another team
+        u = h.con.execute("SELECT id FROM users WHERE login=? AND disabled=0", (login,)).fetchone()
+        if not u:
+            raise bad("No account uses the login '%s'. Check the spelling, or send an invite link instead." % login)
+        if h.con.execute("SELECT 1 FROM people WHERE team_id=? AND user_id=? AND active=1 AND id<>?", (tid, u["id"], p["id"])).fetchone():
+            raise bad("That account is already on this team under another name.")
+        uid = u["id"]
     with Tx(h.con):
-        h.con.execute("UPDATE people SET name=?, role=?, active=? WHERE id=?", (name, role, active, p["id"]))
+        h.con.execute("UPDATE people SET name=?, role=?, active=?, user_id=? WHERE id=?", (name, role, active, uid, p["id"]))
+        if uid and not p["user_id"]:
+            h.con.execute("DELETE FROM invites WHERE person_id=? AND used_at IS NULL", (p["id"],))
         if not active:
             h.con.execute("DELETE FROM invites WHERE person_id=? AND used_at IS NULL", (p["id"],))
     return {"ok": True}

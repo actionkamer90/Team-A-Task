@@ -666,8 +666,12 @@ function personSheet(p) {
       if (isNew) {
         const r = await api("POST", "/api/teams/" + S.teamId + "/people", { name: fName.value, role: fRole.value, login: fLogin.value });
         closeSheet(); toast(r.joined ? "Added. They'll see this team next time they open the tracker." : "Added. Next, create their invite link."); reloadTeam(); return;
-      } else await api("PUT", "/api/teams/" + S.teamId + "/people/" + p.id, { name: fName.value, role: fRole.value, active: true });
-      closeSheet(); toast(isNew ? "Added. Next, create their invite link." : "Saved"); reloadTeam();
+      } else {
+        const body = { name: fName.value, role: fRole.value, active: true };
+        if (!p.joined && fLogin.value.trim()) body.login = fLogin.value;
+        await api("PUT", "/api/teams/" + S.teamId + "/people/" + p.id, body);
+        closeSheet(); toast(body.login ? "Linked. " + p.name + " now sees this team with their existing login." : "Saved"); reloadTeam();
+      }
     } catch (e) { toast(e.message); }
   } }), h("button", { class: "btn", text: "Cancel", onclick: closeSheet })];
   if (p && p.active) foot.push(h("button", { class: "btn danger right", text: "Remove from team", onclick: async () => {
@@ -676,8 +680,8 @@ function personSheet(p) {
   openSheet(isNew ? "Add person" : "Edit " + p.name, [
     h("label", { class: "field" }, h("span", { text: "Display name" }), fName),
     h("label", { class: "field" }, h("span", { text: "Role" }), fRole, admin ? null : h("small", { class: "muted", text: "Only the administrator can make someone a team lead." })),
-    isNew ? h("label", { class: "field" }, h("span", { text: "Existing login (optional)" }), fLogin,
-      h("small", { class: "muted", text: "If this person already has a tracker account for another team, enter their login to add them straight away. Otherwise leave it empty and send an invite link." })) : null,
+    isNew || !p.joined ? h("label", { class: "field" }, h("span", { text: isNew ? "Existing login (optional)" : "Link to an existing login (optional)" }), fLogin,
+      h("small", { class: "muted", text: "If this person already has a tracker account for another team, enter that login so they use one account for both teams. Otherwise leave it empty and send an invite link." })) : null,
     p && !p.active ? h("div", { class: "note", text: "This person was removed. Saving adds them back to the team." }) : null], foot);
 }
 function teamSheet(tm) {
