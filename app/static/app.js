@@ -712,7 +712,7 @@ function viewCustomers(main) {
           h("td", { class: "nowrap" }, h("button", { class: "btn small", text: "View tasks", onclick: () => showTasks(c.name) }),
             data.canAdd ? h("button", { class: "btn small", style: "margin-left:6px", text: "Add to " + team().name, onclick: async () => {
               try { await api("POST", "/api/teams/" + S.teamId + "/customers", { names: [c.name] }); toast("Added " + c.name + " to " + team().name); changed(); } catch (e) { toast(e.message); }
-            } }) : null))))))) : null);
+            } }) : null))))))) : "");  // nothing to show: an empty string, not null (null would print "null")
   }
   async function load() {
     try {
