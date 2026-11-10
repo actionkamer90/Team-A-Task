@@ -166,6 +166,77 @@ def import_team(con, data):
     return tid, len(data["people"]), len(data["tasks"])
 
 
+SYNC_FIELDS = [("category", "category"), ("title", "title"), ("progress", "progress"), ("percent", "percent"), ("urgency", "urgency"),
+               ("customer", "customer"), ("lead", "lead"), ("support", "support"), ("startDate", "start_date"), ("actualDate", "actual_date")]
+
+
+def sync_team(con, tid, data, dry_run=False):
+    """Bring an existing team up to date from a newer copy of its workbook, matching tasks by task number.
+
+    The workbook wins for every field, except that an empty or invalid target date in the workbook never erases a
+    target already set in the tracker. Tasks missing from the workbook are kept and reported, never deleted.
+    Changes are recorded in each task's history as coming from the Excel workbook."""
+    if not con.execute("SELECT 1 FROM teams WHERE id=?", (tid,)).fetchone():
+        raise SystemExit("No team with id '%s'." % tid)
+    live = {}
+    for r in con.execute("SELECT * FROM tasks WHERE team_id=?", (tid,)):
+        t = dict(r)
+        t["lead"], t["support"] = json.loads(t["lead"]), json.loads(t["support"])
+        live[t["no"]] = t
+    have = {r["key"] for r in con.execute("SELECT key FROM people WHERE team_id=?", (tid,))}
+    report = {"updated": [], "added": [], "kept_target": [], "missing": sorted(set(live) - {t["no"] for t in data["tasks"]}),
+              "new_people": [p["name"] for p in data["people"] if p["key"] not in have]}
+    ts = now_iso()
+    with Tx(con):
+        for p in data["people"]:
+            if p["key"] not in have:
+                con.execute("INSERT INTO people(team_id,key,name,role,active,created_at) VALUES(?,?,?,'member',1,?)", (tid, p["key"], p["name"], ts))
+        custs = json.loads(con.execute("SELECT customers FROM teams WHERE id=?", (tid,)).fetchone()[0])
+        extra = [c for c in data["team"].get("customers", []) if c not in custs]
+        if extra:
+            con.execute("UPDATE teams SET customers=? WHERE id=?", (json.dumps(custs + extra), tid))
+        for w in data["tasks"]:
+            t = live.get(w["no"])
+            if not t:
+                cur = con.execute(
+                    "INSERT INTO tasks(team_id,no,category,title,progress,percent,urgency,customer,lead,support,start_date,requested_target,"
+                    "target,actual_date,created_at,updated_at,imported) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+                    (tid, w["no"], w["category"], w["title"], w["progress"], 100 if w["actualDate"] else w["percent"], w["urgency"], w["customer"],
+                     json.dumps(w["lead"]), json.dumps(w["support"]), w["startDate"], w["target"], w["target"], w["actualDate"], ts, ts))
+                con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,NULL,'create',?)", (cur.lastrowid, ts, "[]"))
+                report["added"].append(w["no"])
+                continue
+            wv = dict(w, percent=100 if w["actualDate"] else w["percent"])
+            changes, sets = [], {}
+            for wf, lf in SYNC_FIELDS:
+                if (wv[wf] or None) != (t[lf] or None) and not (lf in ("lead", "support") and sorted(wv[wf]) == sorted(t[lf])):
+                    changes.append([lf] if lf == "progress" else [lf, cut(t[lf]), cut(wv[wf])])
+                    sets[lf] = json.dumps(wv[wf]) if lf in ("lead", "support") else wv[wf]
+            cur_target = t["target"] or t["requested_target"]
+            new_target = w["target"]
+            if not new_target and cur_target:
+                report["kept_target"].append(w["no"])
+            elif new_target != cur_target or (new_target and not t["target"]):
+                if new_target != cur_target:
+                    changes.append(["target", cur_target, new_target])
+                sets.update(target=new_target, requested_target=new_target)
+            if not changes:
+                continue
+            report["updated"].append(w["no"])
+            sets["updated_at"] = ts
+            con.execute("UPDATE tasks SET %s WHERE id=?" % ", ".join("%s=?" % k for k in sets), list(sets.values()) + [t["id"]])
+            con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,NULL,'edit',?)", (t["id"], ts, json.dumps(changes)))
+        if dry_run:
+            raise _DryRun(report)
+    return report
+
+
+class _DryRun(Exception):
+    def __init__(self, report):
+        super().__init__("dry run")
+        self.report = report
+
+
 # ---------------------------------------------------------------- passwords
 def hash_pw(pw):
     salt = secrets.token_bytes(16)
@@ -1102,7 +1173,7 @@ def api_task_history(h, task_id):
         ch = json.loads(r["changes"])
         if isinstance(ch, dict) and "of" in ch:
             ch["of"] = names.get(ch["of"], "Someone")
-        entries.append({"at": r["at"], "by": r["display_name"] or "Someone", "kind": r["kind"], "changes": ch})
+        entries.append({"at": r["at"], "by": r["display_name"] or ("Excel workbook" if r["user_id"] is None else "Someone"), "kind": r["kind"], "changes": ch})
     return {"imported": bool(t["imported"]), "entries": entries}
 
 
@@ -1355,6 +1426,29 @@ if __name__ == "__main__":
         if not a.dry_run:
             init_db()
             print("Imported team '%s': %d people, %d tasks." % import_team(connect(), data))
+    elif cmd == "sync-xlsm":
+        import argparse
+        import xlsm_import
+        ap = argparse.ArgumentParser(prog="server.py sync-xlsm", description="Update an existing team from a newer copy of its workbook.")
+        ap.add_argument("file")
+        ap.add_argument("--team-id", required=True, help="team id as shown in the tracker's address list, e.g. team-automation")
+        ap.add_argument("--dry-run", action="store_true", help="show what would change without saving anything")
+        a = ap.parse_args(sys.argv[2:])
+        init_db()
+        data, problems = xlsm_import.read_workbook(a.file, a.team_id, [])
+        for p in problems:
+            print("  note:", p)
+        try:
+            rep = sync_team(connect(), a.team_id, data, a.dry_run)
+        except _DryRun as d:
+            rep = d.report
+        print("%s %d tasks updated: %s" % ("Would update" if a.dry_run else "Updated", len(rep["updated"]), rep["updated"]))
+        print("New tasks added: %s" % (rep["added"] or "none"))
+        print("Target kept because the workbook has no valid date: %s" % (rep["kept_target"] or "none"))
+        print("In the tracker but not in the workbook (kept): %s" % (rep["missing"] or "none"))
+        print("New people added: %s" % (rep["new_people"] or "none"))
+        if a.dry_run:
+            print("Dry run: nothing was saved.")
     elif cmd == "import" and len(sys.argv) == 3:
         init_db()
         with open(sys.argv[2], encoding="utf-8") as f:

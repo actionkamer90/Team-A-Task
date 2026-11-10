@@ -90,6 +90,23 @@ The `--dry-run` line only checks the workbook: it lists the people it found and 
 as a date that doesn't exist. An import only creates a new team; it refuses to run if a team with
 that name already exists.
 
+### Update a team from a newer copy of its workbook
+
+While a team still keeps its Excel file during the changeover, bring the tracker up to date from the
+latest copy. Tasks are matched by task number; the workbook's values win, new tasks are added, and
+nothing is deleted. An empty or invalid target date in the workbook never erases a target already set
+in the tracker. Every change shows in the task's history as coming from the Excel workbook.
+
+```bash
+podman cp LatestWorkbook.xlsm team-task-tracker:/data/sync.xlsm
+podman exec team-task-tracker python server.py sync-xlsm /data/sync.xlsm --team-id team-automation --dry-run
+podman exec team-task-tracker python server.py sync-xlsm /data/sync.xlsm --team-id team-automation
+podman exec -u 0 team-task-tracker rm /data/sync.xlsm
+```
+
+Back up first (see *Everyday admin*). Note that a sync also overwrites changes made in the tracker
+since the last import, so stop syncing once the team works in the tracker.
+
 ## Update to a new version
 
 ```bash

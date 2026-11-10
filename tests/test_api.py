@@ -384,6 +384,33 @@ class TrackerTest(unittest.TestCase):
         tid, n_people, n_tasks = server.import_team(server.connect(), data)
         self.assertEqual((tid, n_people, n_tasks), ("team-workbook", 3, 2))
 
+    def test_sync_from_newer_workbook(self):
+        con = server.connect()
+        base = {"team": {"id": "sync-team", "name": "Sync Team", "categories": ["Project"], "customers": ["Acme"]},
+                "people": [{"key": "dan", "name": "Dan", "role": "lead"}],
+                "tasks": [{"no": 1, "category": "Project", "title": "One", "lead": ["dan"], "support": [], "percent": 10, "target": "2026-05-01"},
+                          {"no": 2, "category": "Project", "title": "Two", "lead": ["dan"], "support": [], "target": "2026-05-01"},
+                          {"no": 3, "category": "Project", "title": "Three", "lead": ["dan"], "support": []}]}
+        server.import_team(con, base)
+        con.execute("UPDATE tasks SET target='2026-06-01' WHERE team_id='sync-team' AND no=3")  # set in the app
+        newer = {"team": {"customers": ["Acme", "Beta"]}, "people": [{"key": "dan", "name": "Dan"}, {"key": "eve", "name": "Eve"}],
+                 "tasks": [dict(base["tasks"][0], percent=60, progress="moved on", target="2026-05-09"),
+                           dict(base["tasks"][2], target=None),  # workbook date missing: keep the tracker's
+                           {"no": 4, "category": "Project", "title": "Four", "lead": ["eve"], "support": [], "target": None,
+                            "startDate": None, "actualDate": None, "progress": "", "percent": 0, "urgency": "Low", "customer": ""}]}
+        for t in newer["tasks"]:
+            for k in ("startDate", "actualDate", "progress", "urgency", "customer", "percent"):
+                t.setdefault(k, None if k.endswith("Date") else 0 if k == "percent" else "Medium" if k == "urgency" else "")
+        with self.assertRaises(server._DryRun):
+            server.sync_team(con, "sync-team", newer, dry_run=True)
+        self.assertEqual(con.execute("SELECT percent FROM tasks WHERE team_id='sync-team' AND no=1").fetchone()[0], 10)  # dry run saved nothing
+        rep = server.sync_team(con, "sync-team", newer)
+        self.assertEqual((rep["updated"], rep["added"], rep["kept_target"], rep["missing"], rep["new_people"]), ([1], [4], [3], [2], ["Eve"]))
+        row = con.execute("SELECT percent, target, progress FROM tasks WHERE team_id='sync-team' AND no=1").fetchone()
+        self.assertEqual(tuple(row), (60, "2026-05-09", "moved on"))
+        self.assertEqual(con.execute("SELECT target FROM tasks WHERE team_id='sync-team' AND no=3").fetchone()[0], "2026-06-01")
+        self.assertEqual(server.sync_team(con, "sync-team", newer)["updated"], [])  # running again changes nothing
+
     # helpers
     def _task(self, cli, tid):
         return next(t for t in cli.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if t["id"] == tid)
