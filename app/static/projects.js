@@ -119,10 +119,27 @@ function projectPage(main, id) {
     if (editing) return box.replaceChildren(header, planEditor());
     box.replaceChildren(header,
       h("div", { class: "panel pj-gantt-panel" }, h("div", { class: "row between" }, h("h3", { text: "Timeline" }), ganttLegend()), h("div", { class: "tscroll" }, gantt(pr))),
-      h("div", { class: "panel" }, h("h3", { text: "Plan" }), planTable(pr)),
+      h("div", { class: "panel" }, h("div", { class: "row between" }, h("h3", { text: "Plan" }),
+        pr.canEdit ? h("span", { class: "muted small", text: "Change an activity's status here; phases follow their activities." }) : null),
+        readyNote(), planTable(pr, pr.canEdit ? setStatus : null)),
       h("div", { class: "panel" }, h("h3", { text: "Daily tasks linked to this project" }), linkedTasks(pr)),
       pr.holidays.length ? h("p", { class: "muted small m0", text: "Public holidays skipped in this plan: " + pr.holidays.map(x => fmt(x.date) + " " + x.name).join(" · ") }) :
         h("p", { class: "muted small m0", text: "No public holidays registered for this project yet. Add them in Edit plan → Public holidays." }));
+  };
+
+  // the lead / PM changes one activity's status straight from the plan
+  const setStatus = async (it, status, ctl) => {
+    if (ctl) ctl.disabled = true;
+    try { await api("PUT", "/api/projects/" + pr.id + "/items/" + it.id, { status }); toast(it.name + ": " + status); await load(); reloadProjects(); }
+    catch (e) { toast(e.message); if (ctl) ctl.disabled = false; draw(); }
+  };
+  // activities whose linked daily tasks are all completed, waiting for the PM to confirm
+  const readyNote = () => {
+    if (!pr.canEdit) return null;
+    const ready = []; pr.phases.forEach(ph => ph.items.forEach(it => { if (it.tasks && it.tasksDone === it.tasks && it.status !== "Completed") ready.push(it); }));
+    if (!ready.length) return null;
+    return h("div", { class: "note ok pj-ready-note" }, h("b", { text: ready.length + (ready.length === 1 ? " activity has" : " activities have") + " all linked daily tasks completed: " }),
+      ready.map(x => x.name).join(", ") + ". Check them and mark them Completed.");
   };
 
   /* ---------- editor ---------- */
@@ -221,20 +238,40 @@ async function deleteProject(pr) {
 }
 
 /* ---------- read-only plan and linked tasks ---------- */
-function planTable(pr) {
+function planTable(pr, setStatus) {
   const rows = [];
+  // status: a dropdown for the lead / project manager, a pill for everyone else
+  const statusCell = (it, isPh) => {
+    const od = it.overdue ? h("span", { class: "pill bad pj-od", text: "Overdue" }) : null;
+    if (isPh || !setStatus) return h("td", { class: "nowrap" }, h("span", { class: "pill " + (ITEM_STATUS_CLASS[it.status] || ""), text: it.status }), od);
+    const sel = h("select", { class: "pj-status-sel " + (ITEM_STATUS_CLASS[it.status] || ""), "aria-label": "Status of " + it.name, onchange: () => setStatus(it, sel.value, sel) },
+      ["Not Started", "In Progress", "Completed", "At Risk"].map(v => h("option", { value: v, text: v, selected: v === it.status })));
+    return h("td", { class: "nowrap" }, sel, od);
+  };
+  // linked daily tasks: "1 / 2 tasks done"; when all are done and the activity isn't, offer to mark it completed
+  const tasksCell = it => {
+    const bits = [];
+    if (it.remarks) bits.push(h("div", { class: "small", text: it.remarks }));
+    if (it.tasks) {
+      const all = it.tasksDone === it.tasks;
+      bits.push(h("div", { class: "small " + (all ? "ok-text" : "muted"), text: it.tasksDone + " / " + it.tasks + " linked task" + (it.tasks === 1 ? "" : "s") + " done" }));
+      if (all && it.status !== "Completed" && setStatus)
+        bits.push(h("button", { class: "btn small pj-markdone", text: "✓ Mark completed", onclick: e => setStatus(it, "Completed", e.target) }));
+    }
+    return h("td", {}, bits);
+  };
   pr.phases.forEach((ph, pi) => {
-    const r = (no, it, type, isPh) => h("tr", { class: (isPh ? "pj-phase-row" : "") + (it.overdue ? " pj-overdue" : "") },
+    const r = (no, it, type, isPh) => h("tr", { class: (isPh ? "pj-phase-row" : "") + (it.overdue ? " pj-overdue" : "") + (!isPh && it.tasks && it.tasksDone === it.tasks && it.status !== "Completed" ? " pj-ready" : "") },
       h("td", { class: "mono" + (isPh ? "" : " muted"), text: no }), h("td", { text: (type === "Milestone" ? "◆ " : "") + it.name }), h("td", { class: "muted small", text: type }),
       h("td", { class: "small nowrap", text: weeksLabel(it.startDay, it.endDay) }), h("td", { class: "mono nowrap", text: fmt(it.startDate) }), h("td", { class: "mono nowrap", text: fmt(it.endDate) }),
       h("td", { class: "small", text: isPh ? it.deliverable : it.owner }),
-      h("td", { class: "nowrap" }, h("span", { class: "pill " + (ITEM_STATUS_CLASS[it.status] || ""), text: it.status }), it.overdue ? h("span", { class: "pill bad pj-od", text: "Overdue" }) : null),
-      h("td", { class: "small", text: [it.remarks, it.tasks ? it.tasks + " task" + (it.tasks === 1 ? "" : "s") : ""].filter(Boolean).join(" · ") }));
+      statusCell(it, isPh),
+      isPh ? h("td", { class: "small", text: it.remarks || "" }) : tasksCell(it));
     rows.push(r(String(pi + 1), ph, "Phase", true));
     ph.items.forEach((it, ki) => rows.push(r((pi + 1) + "." + (ki + 1), it, it.kind === "milestone" ? "Milestone" : "Activity", false)));
   });
   if (!rows.length) return h("p", { class: "muted", text: "This plan is empty." + (pr.canEdit ? " Use Edit plan to add phases and activities." : "") });
-  return h("div", { class: "tscroll" }, h("table", { class: "pj-plan-table" }, h("thead", {}, h("tr", {}, ["No", "Phase / activity", "Type", "Weeks", "Start", "End", "Owner / deliverable", "Status", "Remarks"].map(c => h("th", { text: c })))), h("tbody", {}, rows)));
+  return h("div", { class: "tscroll" }, h("table", { class: "pj-plan-table" }, h("thead", {}, h("tr", {}, ["No", "Phase / activity", "Type", "Weeks", "Start", "End", "Owner / deliverable", "Status", "Remarks / daily tasks"].map(c => h("th", { text: c })))), h("tbody", {}, rows)));
 }
 function linkedTasks(pr) {
   if (!pr.tasks.length) return h("p", { class: "muted m0", text: "No daily tasks are linked yet. When someone adds a task, they pick this project and its activity on the task form." });

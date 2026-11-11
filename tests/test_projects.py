@@ -155,6 +155,32 @@ class ProjectTests(unittest.TestCase):
         self.assertIn(["project_id", "Zena Upgrade", None], ch)
         self.L.req("DELETE", "/api/projects/%d" % pid)
 
+    def test_status_from_plan_screen(self):
+        s, r = self.create()
+        pid = r["id"]
+        p = self.detail(pid)
+        act, phase = p["phases"][1]["items"][0], p["phases"][1]
+        url = "/api/projects/%d/items/%d" % (pid, act["id"])
+        # a member links a daily task to the activity and completes it; the PM sees it's done and marks the activity Completed
+        s, t, _ = self.M.req("POST", "/api/teams/automation/tasks", {"category": "Project", "title": "Write scripts", "lead": ["bob"],
+                                                                     "startDate": "2026-10-12", "projectId": pid, "projectItemId": act["id"]})
+        it = self.detail(pid)["phases"][1]["items"][0]
+        self.assertEqual((it["tasks"], it["tasksDone"]), (1, 0))
+        task = next(x for x in self.M.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if x["id"] == t["id"])
+        upd = {k: task[k] for k in ("category", "title", "urgency", "percent", "progress", "lead", "support", "projectId", "projectItemId")}
+        upd.update(startDate=task["startDate"], actualDate=dt.date.today().isoformat(), percent=100)
+        self.assertEqual(self.L.req("PUT", "/api/tasks/%d" % t["id"], upd)[0], 200)
+        self.assertEqual(self.detail(pid)["phases"][1]["items"][0]["tasksDone"], 1)
+        self.assertEqual(self.M.req("PUT", url, {"status": "Completed"})[0], 403)        # members can't
+        self.assertEqual(self.L.req("PUT", url, {"status": "Done"})[0], 400)
+        self.assertEqual(self.L.req("PUT", "/api/projects/%d/items/%d" % (pid, phase["id"]), {"status": "Completed"})[0], 400)  # phases follow
+        s, out, _ = self.L.req("PUT", url, {"status": "Completed"})
+        self.assertEqual(s, 200, out)
+        out = self.detail(pid)
+        self.assertEqual(out["phases"][1]["items"][0]["status"], "Completed")
+        self.assertEqual(out["completed"], 1)
+        self.L.req("DELETE", "/api/projects/%d" % pid)
+
     def test_export_timeline_layout(self):
         s, r = self.create()
         pid = r["id"]

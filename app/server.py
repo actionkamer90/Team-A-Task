@@ -1779,12 +1779,15 @@ def project_out(h, p, detail=False):
            "linkedTasks": h.con.execute("SELECT COUNT(*) FROM tasks WHERE project_id=?", (p["id"],)).fetchone()[0],
            "updatedAt": p["updated_at"]}
     if detail:
-        counts = {r["project_item_id"]: r["n"] for r in h.con.execute(
-            "SELECT project_item_id, COUNT(*) AS n FROM tasks WHERE project_id=? AND project_item_id IS NOT NULL GROUP BY project_item_id", (p["id"],))}
+        counts, done_counts = {}, {}
+        for r in h.con.execute("SELECT project_item_id, COUNT(*) AS n, SUM(actual_date IS NOT NULL AND actual_date<>'') AS d FROM tasks "
+                               "WHERE project_id=? AND project_item_id IS NOT NULL GROUP BY project_item_id", (p["id"],)):
+            counts[r["project_item_id"]], done_counts[r["project_item_id"]] = r["n"], r["d"] or 0
         def item(r):
             return {"id": r["id"], "kind": r["kind"], "name": r["name"], "deliverable": r["deliverable"], "owner": r["owner"],
                     "startDay": r["start_day"], "endDay": r["end_day"], "startDate": r["startDate"], "endDate": r["endDate"],
-                    "status": r["status"], "overdue": r["overdue"], "remarks": r["remarks"], "tasks": counts.get(r["id"], 0)}
+                    "status": r["status"], "overdue": r["overdue"], "remarks": r["remarks"], "tasks": counts.get(r["id"], 0),
+                    "tasksDone": done_counts.get(r["id"], 0)}
         out["phases"] = [dict(item(ph), items=[item(k) for k in kids.get(ph["id"], [])]) for ph in phases]
         out["holidays"] = [{"date": d, "name": n} for d, n in hol.items()]
         out["calendar"] = [d.isoformat() for d in days[1:]]  # working day n -> date
@@ -1916,6 +1919,30 @@ def api_project_delete(h, pid):
     with Tx(h.con):
         h.con.execute("DELETE FROM projects WHERE id=?", (p["id"],))  # tasks keep their details; their project link is cleared
     return {"ok": True}
+
+
+@route("PUT", "/api/projects/([0-9]+)/items/([0-9]+)")
+def api_project_item(h, pid, iid):
+    """Change one activity's or milestone's status (and optionally its remarks) straight from the plan, without the editor."""
+    p = get_project(h, pid)
+    _, _, edit = project_rights(h, p)
+    if not edit:
+        raise ApiError(403, "Only the team lead or the project's manager can change an activity's status.")
+    it = h.con.execute("SELECT * FROM project_items WHERE id=? AND project_id=?", (int(iid), p["id"])).fetchone()
+    if not it:
+        raise NOT_FOUND
+    if it["kind"] == "phase":
+        raise bad("A phase's status follows its activities.")
+    status = h.body.get("status", it["status"])
+    if status not in ITEM_STATUSES:
+        raise bad("Status must be one of: %s." % ", ".join(ITEM_STATUSES))
+    remarks = it["remarks"]
+    if "remarks" in h.body:
+        remarks = str(h.body.get("remarks") or "").strip()[:500]
+    with Tx(h.con):
+        h.con.execute("UPDATE project_items SET status=?, remarks=? WHERE id=?", (status, remarks, it["id"]))
+        h.con.execute("UPDATE projects SET updated_at=? WHERE id=?", (now_iso(), p["id"]))
+    return {"ok": True, "status": status}
 
 
 def _day(v, what):
