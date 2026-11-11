@@ -9,6 +9,7 @@ Admin: python app/server.py admin-link     (prints a one-time link to set or res
        python app/server.py make-admin LOGIN   (give an existing account administrator access)
        python app/server.py invite-admin       (one-time link that creates a new administrator account)
 """
+import base64
 import datetime as dt
 import hashlib
 import hmac
@@ -95,6 +96,9 @@ CREATE TABLE IF NOT EXISTS change_requests(
   status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','cancelled')), note TEXT,
   decided_by INTEGER, decided_at TEXT);
 CREATE INDEX IF NOT EXISTS change_requests_team ON change_requests(team_id, status);
+CREATE TABLE IF NOT EXISTS customer_logos(
+  id INTEGER PRIMARY KEY, team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE, name TEXT NOT NULL,
+  png BLOB NOT NULL, updated_by INTEGER, updated_at TEXT NOT NULL, UNIQUE(team_id, name));
 """
 
 
@@ -444,7 +448,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("X-App-Version", APP_VERSION)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        if not any(k.lower() == "cache-control" for k, _ in (extra or [])):
+            self.send_header("Cache-Control", "no-store")
         for k, v in (extra or []):
             self.send_header(k, v)
         self.end_headers()
@@ -506,7 +511,7 @@ class Handler(BaseHTTPRequestHandler):
                     if mt:
                         res = fn(self, *mt.groups())
                         if isinstance(res, tuple) and res and res[0] == "raw":
-                            return self.send(200, res[1], res[2], self.cookies_out)
+                            return self.send(200, res[1], res[2], list(res[3] if len(res) > 3 else []) + self.cookies_out)
                         if isinstance(res, tuple) and res and res[0] == "file":
                             _, data, ctype, fname = res
                             return self.send(200, data, ctype, [("Content-Disposition", 'attachment; filename="%s"' % fname)] + self.cookies_out)
@@ -846,8 +851,64 @@ def api_team(h, tid):
         for p in ppl:
             p.pop("login")
             p.pop("inviteExpires")
+    logos = {r["name"]: "/api/teams/%s/logos/%d?v=%s" % (tid, r["id"], re.sub(r"\D", "", r["updated_at"]))
+             for r in h.con.execute("SELECT id, name, updated_at FROM customer_logos WHERE team_id=?", (tid,))}
     return {"id": t["id"], "name": t["name"], "categories": t["categories"], "customers": t["customers"], "kpi": dict(DEFAULT_KPI, **t["kpi"]),
-            "role": role, "myKey": me["key"] if me else None, "people": ppl, "urgencies": URGENCIES}
+            "role": role, "myKey": me["key"] if me else None, "people": ppl, "urgencies": URGENCIES, "logos": logos}
+
+
+# ---- customer logos: small PNG icons shown beside customer names
+LOGO_MAX_BYTES = 64 * 1024
+LOGO_MAX_PX = 256
+
+
+def check_png(raw):
+    if len(raw) > LOGO_MAX_BYTES:
+        raise bad("The logo is too large. Use an image under %d KB." % (LOGO_MAX_BYTES // 1024))
+    if raw[:8] != b"\x89PNG\r\n\x1a\n" or raw[12:16] != b"IHDR":
+        raise bad("The logo must be a PNG image.")
+    w, h = int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+    if not (0 < w <= LOGO_MAX_PX and 0 < h <= LOGO_MAX_PX):
+        raise bad("The logo must be at most %d × %d pixels." % (LOGO_MAX_PX, LOGO_MAX_PX))
+    return raw
+
+
+@route("PUT", "/api/teams/([a-z0-9-]+)/logos")
+def api_logo_put(h, tid):
+    h.need_lead(tid)
+    name = s_field(h.body, "name", 100, True)
+    data = h.body.get("png")
+    if not isinstance(data, str) or len(data) > LOGO_MAX_BYTES * 2:
+        raise bad("png must be base64 text.")
+    try:
+        raw = base64.b64decode(data.split(",", 1)[-1], validate=True)
+    except ValueError:
+        raise bad("png must be base64 text.")
+    check_png(raw)
+    with Tx(h.con):
+        h.con.execute("INSERT INTO customer_logos(team_id,name,png,updated_by,updated_at) VALUES(?,?,?,?,?) "
+                      "ON CONFLICT(team_id,name) DO UPDATE SET png=excluded.png, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+                      (tid, name, raw, h.user["id"], now_iso()))
+    return {"ok": True}
+
+
+@route("DELETE", "/api/teams/([a-z0-9-]+)/logos")
+def api_logo_delete(h, tid):
+    h.need_lead(tid)
+    name = s_field(h.body, "name", 100, True)
+    with Tx(h.con):
+        h.con.execute("DELETE FROM customer_logos WHERE team_id=? AND name=?", (tid, name))
+    return {"ok": True}
+
+
+@route("GET", "/api/teams/([a-z0-9-]+)/logos/([0-9]+)")
+def api_logo_get(h, tid, lid):
+    h.need_member(tid)
+    r = h.con.execute("SELECT png FROM customer_logos WHERE id=? AND team_id=?", (int(lid), tid)).fetchone()
+    if not r:
+        raise NOT_FOUND
+    # the URL changes whenever the logo changes (?v=), so the browser may keep it for a day
+    return ("raw", bytes(r["png"]), "image/png", [("Cache-Control", "private, max-age=86400")])
 
 
 @route("POST", "/api/teams")

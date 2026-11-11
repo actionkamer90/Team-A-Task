@@ -126,6 +126,7 @@ function helpGuide(isAdmin) {
         list([
           ["Someone who already has a login (from another team) can be added by their login instead."],
           ["Forgotten password: use ", B("Reset password link"), " on their row and send them the new link."],
+          [B("Customer icons: "), "every customer shows a coloured badge with its initials. In ", B("Team settings"), " you can upload a logo for a customer instead; it is shrunk to a small icon and shown beside the customer's name everywhere."],
         ])),
       sec("admin", "All Teams (administrators)",
         P("Create teams, open any team, and manage administrators. To start a new team: create it, add its lead on Team & Invites, and send the lead an invite link. The lead invites the rest.")),

@@ -23,6 +23,8 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Multiple teams.** Each team has its own people, categories, customers and KPI settings.
 - **Daily tasks.** Status is calculated from the target and actual dates, as in the workbook:
   On-Going, Delay, No Target, Completed Early, Completed On Time, Completed Late.
+- **Customer icons.** Every customer name has a small icon: a coloured badge with its initials, or a logo a
+  team lead uploads in *Team settings* (stored as a 64 × 64 PNG in the database).
 - **Help tab.** The **user guide** is for everyone and is also linked from the log-in page. Administrators
   also get a **data model** diagram, an **architecture** (component) diagram and this README as the
   **setup guide**; the server only sends those to administrators.

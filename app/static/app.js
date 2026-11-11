@@ -66,6 +66,25 @@ const isLead = () => role() === "lead" || role() === "admin";
 const myKey = () => S.team?.myKey || null;
 const people = () => S.team?.people || [];
 const personName = k => (people().find(p => p.key === k)?.name) || k;
+
+/* ---------- customer icons ---------- */
+// An uploaded logo if the team has one, otherwise a coloured badge with the customer's initials.
+const SKIP_WORDS = new Set(["all", "customer", "customers", "the", "of", "and", "&"]);
+function custInitials(name) {
+  const words = name.replace(/[^\p{L}\p{N}&\s]/gu, " ").split(/\s+/).filter(w => w && !SKIP_WORDS.has(w.toLowerCase()));
+  if (!words.length) return "?";
+  if (words.length === 1) return words[0].length <= 4 && words[0] === words[0].toUpperCase() ? words[0] : words[0].slice(0, 2).toUpperCase();
+  return words.slice(0, 3).map(w => w[0]).join("").toUpperCase();
+}
+function custHue(name) { let x = 0; for (const c of name.toLowerCase()) x = (x * 31 + c.codePointAt(0)) >>> 0; return x % 8; }
+function custIcon(name, big) {
+  if (!name) return null;
+  const src = team()?.logos?.[name];
+  if (src) return h("img", { class: "cust-ico" + (big ? " big" : ""), src, alt: "", width: big ? "28" : "18", height: big ? "28" : "18", loading: "lazy" });
+  const ini = custInitials(name);
+  return h("span", { class: "cust-ico cust-b cust-b" + custHue(name) + (big ? " big" : "") + (ini.length > 2 ? " wide" : ""), "aria-hidden": "true", text: ini });
+}
+const custLabel = name => name ? h("span", { class: "cust" }, h("span", { class: "cust-slot" }, custIcon(name)), h("span", { text: name })) : "—";
 (function initKpiRange() { const y = new Date().getFullYear(); S.kpi = { from: y + "-01-01", to: y + "-12-31" }; })();
 
 /* ---------- boot ---------- */
@@ -350,7 +369,7 @@ function taskTable(list, archive) {
       h("td", {}, h("div", { class: "task-title", text: t.title }), t.progress ? h("div", { class: "task-prog", text: t.progress }) : null),
       h("td", { class: "num" }, h("div", { class: "pct" }, h("i", {}, h("em", { style: "width:" + t.percent + "%" })), h("span", { class: "mono", text: t.percent + "%" }))),
       h("td", {}, h("span", { class: "urg " + t.urgency, text: t.urgency })),
-      h("td", { class: "nowrap", text: t.customer || "—" }),
+      h("td", { class: "nowrap" }, custLabel(t.customer)),
       h("td", { class: "nowrap", text: names(t.lead) }), h("td", { class: "nowrap", text: names(t.support) }),
       h("td", { class: "mono nowrap", text: fmt(t.startDate) }),
       h("td", { class: "mono nowrap" }, fmt(t.effTarget), t.pending ? h("span", { class: "pending", text: "awaiting lead" }) : null),
@@ -462,7 +481,11 @@ function taskSheet(t) {
   const body = [dl, ...banners,
     h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Category" }), fCat), h("label", { class: "field" }, h("span", { text: "Urgency" }), fUrg)),
     h("label", { class: "field" }, h("span", { text: "Main task / project" }), fTitle),
-    h("label", { class: "field" }, h("span", { text: "Customer" }), fCust),
+    h("label", { class: "field" }, h("span", { text: "Customer" }), (() => {
+      const ico = h("span", { class: "cust-slot" }, custIcon(fCust.value));
+      fCust.addEventListener("input", () => ico.replaceChildren(custIcon(fCust.value.trim()) || ""));
+      return h("span", { class: "cust-field" }, ico, fCust);
+    })()),
     h("div", { class: "field" }, h("div", { class: "row between" }, h("span", { class: "lbl", text: "Task progress" }), addNote), fProg),
     h("label", { class: "field w160" }, h("span", { text: "Task percentage" }), fPct),
     h("div", { class: "field" }, h("span", { class: "lbl", text: "Lead engineer" }), fLead),
@@ -641,7 +664,7 @@ function viewSummary(main) {
     const cm = {}; open.forEach(t => { const k = t.customer || "(none)"; cm[k] = (cm[k] || 0) + 1; });
     const cr = Object.entries(cm).sort((a, b) => b[1] - a[1]);
     byCust.replaceChildren(cr.length ? h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Customer" }), h("th", { class: "num", text: "Open" }))),
-      h("tbody", {}, cr.map(([k, v]) => h("tr", {}, h("td", { text: k }), h("td", { class: "num mono", text: v })))))) : h("p", { class: "muted", text: "No open tasks." }));
+      h("tbody", {}, cr.map(([k, v]) => h("tr", {}, h("td", {}, k === "(none)" ? k : custLabel(k)), h("td", { class: "num mono", text: v })))))) : h("p", { class: "muted", text: "No open tasks." }));
   };
 }
 
@@ -791,7 +814,8 @@ function teamSheet(tm) {
   const fCust = h("textarea", { id: "tm-cust" }); fCust.value = (tm?.customers || []).join("\n");
   openSheet(isNew ? "Create team" : "Team settings", [h("label", { class: "field" }, h("span", { text: "Team name" }), fName),
     h("label", { class: "field" }, h("span", { text: "Task categories (one per line)" }), fCats),
-    h("label", { class: "field" }, h("span", { text: "Customers (one per line, offered as suggestions)" }), fCust)],
+    h("label", { class: "field" }, h("span", { text: "Customers (one per line, offered as suggestions)" }), fCust),
+    isNew ? null : logoManager(tm)],
     [h("button", { class: "btn primary", text: isNew ? "Create team" : "Save", onclick: async () => {
       const lines = x => x.value.split("\n").map(s => s.trim()).filter(Boolean);
       try {
@@ -800,6 +824,51 @@ function teamSheet(tm) {
         else { await api("PUT", "/api/teams/" + tm.id, body); closeSheet(); toast("Saved"); await loadMe(); }
       } catch (e) { toast(e.message); }
     } }), h("button", { class: "btn", text: "Cancel", onclick: closeSheet })]);
+}
+
+// Customer icons in Team settings: upload a logo (shrunk to a 64 × 64 PNG in the browser) or go back to initials.
+function logoManager(tm) {
+  const box = h("div", { class: "logo-mgr" });
+  const draw = () => {
+    const names = [...new Set([...(team()?.customers || []), ...Object.keys(team()?.logos || {})])].sort((a, b) => a.localeCompare(b));
+    box.replaceChildren(h("span", { class: "lbl", text: "Customer icons" }),
+      h("p", { class: "muted small m0", text: "Each customer shows its initials until you upload a logo. PNG, JPG, GIF, WebP or SVG; it is shrunk to a small 64 × 64 icon. Save the customer list above first to add new customers here." }),
+      names.length ? h("ul", { class: "logo-list" }, names.map(n => {
+        const has = !!team()?.logos?.[n];
+        const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/svg+xml", class: "sr-only", id: "logo-" + custHue(n) + "-" + n.length,
+          onchange: async e => {
+            const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+            try { await api("PUT", "/api/teams/" + tm.id + "/logos", { name: n, png: await toIconPng(f) }); await reloadTeam(); draw(); toast("Logo saved for " + n); }
+            catch (x) { toast(x.message); }
+          } });
+        return h("li", {}, custIcon(n, true), h("span", { class: "nm", text: n }),
+          h("label", { class: "btn small", for: file.id }, has ? "Change logo" : "Upload logo", file),
+          has ? h("button", { class: "btn small", type: "button", text: "Use initials", onclick: async () => {
+            try { await api("DELETE", "/api/teams/" + tm.id + "/logos", { name: n }); await reloadTeam(); draw(); toast("Back to initials for " + n); } catch (x) { toast(x.message); }
+          } }) : null);
+      })) : h("p", { class: "muted small m0", text: "No customers yet." }));
+  };
+  draw();
+  return box;
+}
+function toIconPng(file) {
+  return new Promise((ok, fail) => {
+    if (file.size > 5 * 1024 * 1024) return fail(new Error("That image is too big. Pick one under 5 MB."));
+    const rd = new FileReader();
+    rd.onerror = () => fail(new Error("Couldn't read that file."));
+    rd.onload = () => {
+      const img = new Image();
+      img.onerror = () => fail(new Error("That file isn't an image the browser can open."));
+      img.onload = () => {
+        const N = 64, c = document.createElement("canvas"); c.width = c.height = N;
+        const k = Math.min(N / (img.naturalWidth || N), N / (img.naturalHeight || N)), w = (img.naturalWidth || N) * k, hh = (img.naturalHeight || N) * k;
+        const g = c.getContext("2d"); g.imageSmoothingQuality = "high"; g.drawImage(img, (N - w) / 2, (N - hh) / 2, w, hh);
+        try { ok(c.toDataURL("image/png")); } catch { fail(new Error("Couldn't convert that image.")); }
+      };
+      img.src = rd.result;
+    };
+    rd.readAsDataURL(file);
+  });
 }
 
 /* ---------- all teams (admin) ---------- */
