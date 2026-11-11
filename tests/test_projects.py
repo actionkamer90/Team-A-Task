@@ -181,6 +181,37 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(out["completed"], 1)
         self.L.req("DELETE", "/api/projects/%d" % pid)
 
+    def test_target_follows_activity(self):
+        s, r = self.create(startDate="2026-12-01")
+        pid = r["id"]
+        p = self.detail(pid)
+        act = p["phases"][1]["items"][0]                                # Development: script development
+        # a member's task linked to the activity: the target is the activity's end date, official at once (no approval)
+        s, t, _ = self.M.req("POST", "/api/teams/automation/tasks", {"category": "Project", "title": "Scripts", "lead": ["bob"], "startDate": "2026-12-01",
+                                                                     "target": "2027-06-30", "projectId": pid, "projectItemId": act["id"]})
+        self.assertEqual((s, t["pending"]), (200, []))
+        task = lambda: next(x for x in self.M.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if x["id"] == t["id"])
+        self.assertEqual((task()["target"], task()["effTarget"]), (act["endDate"], act["endDate"]))
+        # trying to change it, as a member or the lead, keeps the plan's date
+        upd = {k: task()[k] for k in ("category", "title", "urgency", "percent", "progress", "lead", "support", "projectId", "projectItemId")}
+        upd.update(startDate="2026-12-01", target="2027-01-31")
+        self.assertEqual(self.M.req("PUT", "/api/tasks/%d" % t["id"], dict(upd, progress="note"))[1].get("pending"), [])
+        self.assertEqual(self.L.req("PUT", "/api/tasks/%d" % t["id"], dict(upd, progress="note 2"))[0], 200)
+        self.assertEqual(task()["target"], act["endDate"])
+        self.assertEqual(self.L.req("PUT", "/api/tasks/%d/target" % t["id"], {"target": "2027-01-31"})[0], 400)
+        # moving the plan moves the target of open linked tasks
+        self.assertEqual(self.L.req("PUT", "/api/projects/%d" % pid, {"name": "Zena Upgrade", "client": "RHB", "startDate": "2026-12-08", "status": "Active"})[1]["tasksMoved"], 1)
+        new_end = self.detail(pid)["phases"][1]["items"][0]["endDate"]
+        self.assertNotEqual(new_end, act["endDate"])
+        self.assertEqual(task()["target"], new_end)
+        hist = self.M.req("GET", "/api/tasks/%d/history" % t["id"])[1]["entries"]
+        self.assertTrue(any(e["kind"] == "target" and e["changes"].get("plan") and e["changes"]["to"] == new_end for e in hist))
+        # unlinking the activity frees the target again (a member's new date then goes to the lead)
+        upd.update(projectItemId=None, target="2027-02-26", progress="unlinked")
+        self.assertEqual(self.M.req("PUT", "/api/tasks/%d" % t["id"], upd)[1].get("pending"), ["target"])
+        self.L.req("DELETE", "/api/tasks/%d" % t["id"])
+        self.L.req("DELETE", "/api/projects/%d" % pid)
+
     def test_export_timeline_layout(self):
         s, r = self.create()
         pid = r["id"]
