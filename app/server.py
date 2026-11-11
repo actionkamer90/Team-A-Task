@@ -1144,7 +1144,7 @@ def parse_task(h, tid, body, team):
     except (TypeError, ValueError):
         raise bad("Task percentage must be a number.")
     d = {"category": cat, "title": s_field(body, "title", 200, True), "customer": s_field(body, "customer", 100),
-         "urgency": urg, "percent": max(0, min(100, pct)), "progress": s_field(body, "progress", 8000),
+         "urgency": urg, "percent": max(0, min(100, pct)), "progress": s_field(body, "progress", PROGRESS_MAX),
          "lead": ppl("lead"), "support": ppl("support"), "start_date": d_field(body, "startDate"), "actual_date": d_field(body, "actualDate")}
     if not d["lead"]:
         raise bad("Choose at least one Lead Engineer.")
@@ -1202,11 +1202,44 @@ def proposal_fields(t, proposal):
     return out
 
 
+# ---- signed progress notes: every new or changed line gets "[dd/mm/yyyy hh:mm Name] " in front
+SIGNED_RE = re.compile(r"^\[\d{2}/\d{2}/\d{4} \d{2}:\d{2} [^\]]{1,60}\] ")
+PROGRESS_MAX = 12000
+
+
+def signer_name(h, tid):
+    me = h.my_person(tid)
+    return (me and me["name"]) or h.user["display_name"] or h.user["login"]
+
+
+def sign_progress(old, new, name, when=None):
+    """Sign the lines of `new` that aren't in `old` (added or edited). Unchanged and already-signed lines stay as they are."""
+    stamp = "[%s %s] " % ((when or dt.datetime.now()).strftime("%d/%m/%Y %H:%M"), re.sub(r"[\[\]\n]", "", name).strip()[:60] or "Someone")
+    left = {}
+    for line in (old or "").split("\n"):
+        left[line.strip()] = left.get(line.strip(), 0) + 1
+    out = []
+    for line in (new or "").split("\n"):
+        key = line.strip()
+        if key and left.get(key):
+            left[key] -= 1
+            out.append(line)
+        elif not key or SIGNED_RE.match(key):
+            out.append(line)
+        else:
+            out.append(stamp + key)
+    signed = "\n".join(out)
+    if len(signed) > PROGRESS_MAX:
+        raise bad("The progress notes are too long. Remove some older lines and save again.")
+    return signed
+
+
 @route("POST", "/api/teams/([a-z0-9-]+)/tasks")
 def api_task_create(h, tid):
     role = h.need_member(tid)
     team = h.team(tid)
     d = parse_task(h, tid, h.body, team)
+    d["progress"] = sign_progress("", d["progress"], signer_name(h, tid))
     target = d_field(h.body, "target")
     lead = role in ("lead", "admin")
     me = h.my_person(tid)
@@ -1258,6 +1291,7 @@ def api_task_update(h, task_id):
     if not can_edit(role, my_key, t):
         raise ApiError(403, "Only the task's Lead Engineer or the team lead can change it.")
     d = parse_task(h, t["team_id"], h.body, h.team(t["team_id"]))
+    d["progress"] = sign_progress(t["progress"], d["progress"], signer_name(h, t["team_id"]))
     target = d_field(h.body, "target") if "target" in h.body else (t["target"] or t["requested_target"])
     lead = role in ("lead", "admin")
     if not lead and my_key not in d["lead"]:

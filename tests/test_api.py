@@ -281,7 +281,8 @@ class TrackerTest(unittest.TestCase):
         s, r, _ = M.req("PUT", "/api/tasks/%d" % tid, dict(self._body(t), percent=60, progress="halfway"))
         self.assertEqual((s, r["pending"]), (200, []))
         t = self._task(M, tid)
-        self.assertEqual((t["percent"], t["progress"]), (60, "halfway"))
+        self.assertEqual(t["percent"], 60)
+        self.assertRegex(t["progress"], r"^\[\d{2}/\d{2}/\d{4} \d{2}:\d{2} Bob\] halfway$")  # signed on save
         self.assertFalse(t["changePending"])
 
         # details + new target in one save: details apply now, target waits
@@ -346,7 +347,7 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual((s, r["pending"]), (200, ["actual_date"]))
         t = self._task(M, tid)
         self.assertIsNone(t["actualDate"])
-        self.assertEqual(t["progress"], "done last week")
+        self.assertRegex(t["progress"], r"^\[\d{2}/\d{2}/\d{4} \d{2}:\d{2} Bob\] done last week$")
         self.assertEqual(t["pendingFields"], ["actual_date"])
         rq = next(x for x in L.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == tid)
         self.assertEqual(rq["changes"], [["actual_date", None, last_week]])

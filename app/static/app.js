@@ -458,9 +458,10 @@ function taskSheet(t) {
   const dl = h("datalist", { id: "cust-list" }, tm.customers.map(c => h("option", { value: c })));
   const fUrg = h("select", { id: "t-urg", disabled: locked }, tm.urgencies.map(u => h("option", { value: u, text: u }))); fUrg.value = T.urgency;
   const fPct = h("input", { type: "number", id: "t-pct", min: "0", max: "100", step: "5", value: String(T.percent || 0), disabled: locked });
-  const fProg = h("textarea", { id: "t-prog", disabled: locked, maxlength: "8000", placeholder: "Latest progress, one update per line" }); fProg.value = T.progress || "";
-  const addNote = h("button", { type: "button", class: "btn small", disabled: locked, text: "Add dated update", onclick: () => {
-    const d = S.today; fProg.value = d.slice(8, 10) + "/" + d.slice(5, 7) + ": \n" + fProg.value; fProg.focus(); fProg.setSelectionRange(7, 7);
+  const fProg = h("textarea", { id: "t-prog", disabled: locked, maxlength: "12000", placeholder: "Latest progress, one update per line" }); fProg.value = T.progress || "";
+  // New or changed lines are signed by the server on save: "[dd/mm/yyyy hh:mm Name] text"
+  const addNote = h("button", { type: "button", class: "btn small", disabled: locked, text: "Add update", onclick: () => {
+    fProg.value = "\n" + fProg.value; fProg.focus(); fProg.setSelectionRange(0, 0);
   } });
   const fLead = peopleToggles("t-lead", T.lead, locked), fSup = peopleToggles("t-sup", T.support, locked);
   const fStart = h("input", { type: "date", id: "t-start", value: T.startDate || "", disabled: locked });
@@ -486,7 +487,8 @@ function taskSheet(t) {
       fCust.addEventListener("input", () => ico.replaceChildren(custIcon(fCust.value.trim()) || ""));
       return h("span", { class: "cust-field" }, ico, fCust);
     })()),
-    h("div", { class: "field" }, h("div", { class: "row between" }, h("span", { class: "lbl", text: "Task progress" }), addNote), fProg),
+    h("div", { class: "field" }, h("div", { class: "row between" }, h("span", { class: "lbl", text: "Task progress" }), addNote), fProg,
+      locked ? null : h("small", { class: "muted", text: "Write each update on its own line. When you save, new or changed lines are signed with your name, the date and the time." })),
     h("label", { class: "field w160" }, h("span", { text: "Task percentage" }), fPct),
     h("div", { class: "field" }, h("span", { class: "lbl", text: "Lead engineer" }), fLead),
     h("div", { class: "field" }, h("span", { class: "lbl", text: "Support engineer" }), fSup),
