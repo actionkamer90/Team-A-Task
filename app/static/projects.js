@@ -118,7 +118,7 @@ function projectPage(main, id) {
         pr.overdue + " activit" + (pr.overdue === 1 ? "y is" : "ies are") + " past their end date and not completed" + (pr.atRisk > pr.overdue ? ", or marked At Risk" : "") + ". The project status is " + pr.status + ".") : null);
     if (editing) return box.replaceChildren(header, planEditor());
     box.replaceChildren(header,
-      h("div", { class: "panel pj-gantt-panel" }, h("div", { class: "row between" }, h("h3", { text: "Timeline" }), ganttLegend()), h("div", { class: "tscroll" }, gantt(pr))),
+      h("div", { class: "panel pj-gantt-panel" }, h("div", { class: "row between" }, h("h3", { text: "Timeline" }), ganttLegend()), gantt(pr)),
       h("div", { class: "panel" }, h("div", { class: "row between" }, h("h3", { text: "Plan" }),
         pr.canEdit ? h("span", { class: "muted small", text: "Change an activity's status here; phases follow their activities." }) : null),
         readyNote(), planTable(pr, pr.canEdit ? setStatus : null)),
@@ -243,10 +243,10 @@ function planTable(pr, setStatus) {
   // status: a dropdown for the lead / project manager, a pill for everyone else
   const statusCell = (it, isPh) => {
     const od = it.overdue ? h("span", { class: "pill bad pj-od", text: "Overdue" }) : null;
-    if (isPh || !setStatus) return h("td", { class: "nowrap" }, h("span", { class: "pill " + (ITEM_STATUS_CLASS[it.status] || ""), text: it.status }), od);
+    if (isPh || !setStatus) return h("td", {}, h("div", { class: "pj-status-cell" }, h("span", { class: "pill " + (ITEM_STATUS_CLASS[it.status] || ""), text: it.status }), od));
     const sel = h("select", { class: "pj-status-sel " + (ITEM_STATUS_CLASS[it.status] || ""), "aria-label": "Status of " + it.name, onchange: () => setStatus(it, sel.value, sel) },
       ["Not Started", "In Progress", "Completed", "At Risk"].map(v => h("option", { value: v, text: v, selected: v === it.status })));
-    return h("td", { class: "nowrap" }, sel, od);
+    return h("td", {}, h("div", { class: "pj-status-cell" }, sel, od));
   };
   // linked daily tasks: "1 / 2 tasks done"; when all are done and the activity isn't, offer to mark it completed
   const tasksCell = it => {
@@ -288,6 +288,7 @@ function ganttLegend() {
     h("span", {}, "◆ Milestone"), h("span", {}, h("i", { class: "ln", style: "border-top:2px solid #C00000" }), "Today"), h("span", {}, h("i", { class: "sw pj-sw-od" }), "Overdue"));
 }
 function gantt(pr) {
+  // two SVGs side by side: the phase / activity names stay put, the day columns scroll left and right
   const NS = "http://www.w3.org/2000/svg";
   const el = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.append(e); return e; };
   const txt = (s, attrs, parent) => { const e = el("text", attrs, parent); e.textContent = s; return e; };
@@ -295,40 +296,47 @@ function gantt(pr) {
   pr.phases.forEach((ph, pi) => { rows.push({ it: ph, ph: pi, phase: true, no: String(pi + 1) }); ph.items.forEach((it, ki) => rows.push({ it, ph: pi, phase: false, no: (pi + 1) + "." + (ki + 1) })); });
   const ndays = Math.max(5, Math.ceil(Math.max(1, ...rows.map(r => r.it.endDay)) / 5) * 5);
   const cal = pr.calendar.length >= ndays ? pr.calendar : workdays(pr.startDate, pr.holidays.map(x => x.date), ndays).slice(1);
-  const LW = 330, CW = 24, RH = 22, TOP = 46, W = LW + ndays * CW + 10, H = TOP + rows.length * RH + 8;
+  const LW = 330, CW = 24, RH = 22, TOP = 46, W = ndays * CW + 10, H = TOP + rows.length * RH + 8;
+  const left = el("svg", { class: "pj-gantt", viewBox: "0 0 " + LW + " " + H, width: LW, height: H, role: "img", "aria-label": "Phases and activities" });
   const svg = el("svg", { class: "pj-gantt", viewBox: "0 0 " + W + " " + H, width: W, height: H, role: "img", "aria-label": "Project timeline" });
   // header: week labels, day numbers, dates
+  let todayX = null;
   for (let d = 1; d <= ndays; d++) {
-    const x = LW + (d - 1) * CW, date = cal[d - 1];
+    const x = (d - 1) * CW, date = cal[d - 1];
     if ((d - 1) % 5 === 0) {
       el("rect", { x, y: 0, width: CW * 5, height: 16, class: "pj-wk" + (((d - 1) / 5) % 2 ? " alt" : "") }, svg);
       const mon = date ? " · " + ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][Number(date.slice(5, 7)) - 1] + " " + date.slice(2, 4) : "";
       txt("Week " + ((d - 1) / 5 + 1) + mon, { x: x + CW * 2.5, y: 12, class: "pj-wk-t", "text-anchor": "middle" }, svg);
     }
     const isToday = date === pr.today;
-    if (isToday) el("rect", { x, y: 16, width: CW, height: H - 16, class: "pj-today-col" }, svg);
+    if (isToday) { todayX = x; el("rect", { x, y: 16, width: CW, height: H - 16, class: "pj-today-col" }, svg); }
     txt(String(d), { x: x + CW / 2, y: 29, class: "pj-day" + (isToday ? " today" : ""), "text-anchor": "middle" }, svg);
     if (date) { const t = txt(date.slice(8, 10), { x: x + CW / 2, y: 41, class: "pj-date" + (isToday ? " today" : ""), "text-anchor": "middle" }, svg); el("title", {}, t).textContent = fmt(date) + (isToday ? " (today)" : ""); }
     if ((d - 1) % 5 === 0) el("line", { x1: x, x2: x, y1: 16, y2: H, class: "pj-wkline" }, svg);
   }
-  txt("Phase / activity", { x: 8, y: 41, class: "pj-head-t" }, svg);
+  txt("Phase / activity", { x: 8, y: 41, class: "pj-head-t" }, left);
   rows.forEach((r, i) => {
     const y = TOP + i * RH, it = r.it, [dark, light] = PJ_COLOURS[r.ph % PJ_COLOURS.length];
-    if (r.phase) el("rect", { x: 0, y, width: W, height: RH, class: "pj-phase-bg" }, svg);
-    el("line", { x1: 0, x2: W, y1: y + RH, y2: y + RH, class: "pj-row" }, svg);
-    const label = txt((r.phase ? r.no + "  " : "    " + r.no + "  ") + (it.kind === "milestone" ? "◆ " : "") + it.name, { x: 8, y: y + 15, class: "pj-label" + (r.phase ? " phase" : "") + (it.overdue ? " od" : "") }, svg);
-    if (it.name.length > 40) { label.textContent = label.textContent.slice(0, 44 + (r.phase ? 0 : 4)) + "…"; el("title", {}, label).textContent = it.name; }
-    const x1 = LW + (it.startDay - 1) * CW, x2 = LW + it.endDay * CW;
+    for (const [s, w] of [[left, LW], [svg, W]]) {
+      if (r.phase) el("rect", { x: 0, y, width: w, height: RH, class: "pj-phase-bg" }, s);
+      el("line", { x1: 0, x2: w, y1: y + RH, y2: y + RH, class: "pj-row" }, s);
+    }
+    const label = txt((r.phase ? r.no + "  " : "    " + r.no + "  ") + (it.kind === "milestone" ? "◆ " : "") + it.name, { x: 8, y: y + 15, class: "pj-label" + (r.phase ? " phase" : "") + (it.overdue ? " od" : "") }, left);
+    if (it.name.length > 40) label.textContent = label.textContent.slice(0, 44 + (r.phase ? 0 : 4)) + "…";
+    el("title", {}, label).textContent = it.name + "\n" + fmt(it.startDate) + " – " + fmt(it.endDate) + " · " + it.status + (it.overdue ? " · OVERDUE" : "");
+    const x1 = (it.startDay - 1) * CW, x2 = it.endDay * CW;
     const g = el("g", { class: "pj-bar-g" }, svg);
     el("title", {}, g).textContent = it.name + "\n" + fmt(it.startDate) + " – " + fmt(it.endDate) + " · " + it.status + (it.overdue ? " · OVERDUE" : "");
     if (it.kind === "milestone") {
-      const cx = LW + (it.endDay - 0.5) * CW, cy = y + RH / 2;
+      const cx = (it.endDay - 0.5) * CW, cy = y + RH / 2;
       el("path", { d: `M${cx},${cy - 7} L${cx + 7},${cy} L${cx},${cy + 7} L${cx - 7},${cy} Z`, class: "pj-ms" + (it.status === "Completed" ? " done" : "") + (it.overdue ? " od" : "") }, g);
     } else {
       el("rect", { x: x1 + 1, y: y + (r.phase ? 4 : 6), width: Math.max(4, x2 - x1 - 2), height: r.phase ? RH - 8 : RH - 12, rx: 3, fill: r.phase ? dark : light, class: "pj-bar" + (it.overdue ? " od" : "") }, g);
       if (it.status === "Completed" && !r.phase) txt("✓", { x: x2 - 9, y: y + 15, class: "pj-check" }, g);
     }
   });
-  el("line", { x1: LW, x2: LW, y1: 16, y2: H, class: "pj-split" }, svg);
-  return svg;
+  const scroller = h("div", { class: "pj-gantt-scroll" }, svg);
+  // open on the current week (a week before today), so the work in hand is in view
+  if (todayX !== null) requestAnimationFrame(() => { scroller.scrollLeft = Math.max(0, todayX - CW * 5); });
+  return h("div", { class: "pj-gantt-wrap" }, h("div", { class: "pj-gantt-names" }, left), scroller);
 }
