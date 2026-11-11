@@ -505,6 +505,8 @@ class Handler(BaseHTTPRequestHandler):
                     mt = rx.match(path)
                     if mt:
                         res = fn(self, *mt.groups())
+                        if isinstance(res, tuple) and res and res[0] == "raw":
+                            return self.send(200, res[1], res[2], self.cookies_out)
                         if isinstance(res, tuple) and res and res[0] == "file":
                             _, data, ctype, fname = res
                             return self.send(200, data, ctype, [("Content-Disposition", 'attachment; filename="%s"' % fname)] + self.cookies_out)
@@ -631,14 +633,30 @@ def _readme_path():
     return None
 
 
+def need_admin(h):
+    u = h.need_user()
+    if not u["is_admin"]:
+        raise FORBIDDEN
+    return u
+
+
 @route("GET", "/api/help/readme")
 def api_help_readme(h):
-    # The setup guide is public (the repository is public), so no login is needed: the Help link works from the log-in page.
+    # Setup guide: administrators only. The user guide (help.js) is public and needs no route.
+    need_admin(h)
     p = _readme_path()
     if not p:
         raise NOT_FOUND
     with open(p, encoding="utf-8") as f:
         return {"markdown": f.read()}
+
+
+@route("GET", "/api/help/admin.js")
+def api_help_admin_js(h):
+    # Data model, Architecture and Setup guide sections: only sent to administrators.
+    need_admin(h)
+    with open(os.path.join(STATIC, "help_admin.js"), "rb") as f:
+        return ("raw", f.read(), "text/javascript; charset=utf-8")
 
 
 @route("GET", "/api/me")

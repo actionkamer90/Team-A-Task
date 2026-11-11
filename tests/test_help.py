@@ -5,14 +5,16 @@ import os
 import re
 import sys
 import unittest
+import urllib.error
 import urllib.request
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.join(ROOT, "app"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_api  # noqa: E402  (starts the test server and sets TT_DB)
 import server  # noqa: E402
 
-HELP_JS = os.path.join(ROOT, "app", "static", "help.js")
+HELP_JS = os.path.join(ROOT, "app", "static", "help_admin.js")
 
 
 def schema_columns():
@@ -49,15 +51,39 @@ class HelpTests(unittest.TestCase):
         for t in real:
             self.assertEqual(real[t], drawn[t], "columns of %s in the Help diagram differ from SCHEMA" % t)
 
-    def test_readme_served_without_login(self):
-        with urllib.request.urlopen(test_api.BASE + "/api/help/readme") as r:
-            data = json.loads(r.read())
-        self.assertIn("Team Task Tracker", data["markdown"])
+    @classmethod
+    def setUpClass(cls):
+        # reuse the admin, lead and member accounts that test_api creates
+        if not hasattr(test_api.TrackerTest, "admin"):
+            test_api.TrackerTest.setUpClass()
+        cls.admin, cls.lead, cls.member = test_api.TrackerTest.admin, test_api.TrackerTest.lead, test_api.TrackerTest.member
 
-    def test_help_script_served(self):
+    def test_readme_admin_only(self):
+        s, r, _ = self.admin.req("GET", "/api/help/readme")
+        self.assertEqual(s, 200)
+        self.assertIn("Team Task Tracker", r["markdown"])
+        self.assertEqual(self.lead.req("GET", "/api/help/readme")[0], 403)
+        self.assertEqual(self.member.req("GET", "/api/help/readme")[0], 403)
+        self.assertEqual(test_api.Client().req("GET", "/api/help/readme")[0], 401)
+
+    def test_admin_help_script_admin_only(self):
+        s, body, hd = self.admin.req("GET", "/api/help/admin.js", raw=True)
+        self.assertEqual(s, 200)
+        self.assertIn("javascript", hd["Content-Type"])
+        self.assertIn(b"function helpArch", body)
+        self.assertIn(b"function helpModel", body)
+        self.assertEqual(self.lead.req("GET", "/api/help/admin.js")[0], 403)
+        self.assertEqual(test_api.Client().req("GET", "/api/help/admin.js")[0], 401)
+        # not reachable as a public static file either
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(test_api.BASE + "/help_admin.js")
+        self.assertEqual(cm.exception.code, 404)
+
+    def test_user_guide_public(self):
         with urllib.request.urlopen(test_api.BASE + "/help.js") as r:
-            self.assertIn("javascript", r.headers["Content-Type"])
-            self.assertIn(b"helpView", r.read())
+            body = r.read()
+        self.assertIn(b"function helpGuide", body)
+        self.assertNotIn(b"ERD_TABLES", body)  # admin content is not in the public file
         with urllib.request.urlopen(test_api.BASE + "/") as r:
             self.assertIn(b'src="/help.js"', r.read())
 

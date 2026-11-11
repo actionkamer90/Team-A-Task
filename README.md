@@ -23,8 +23,9 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Multiple teams.** Each team has its own people, categories, customers and KPI settings.
 - **Daily tasks.** Status is calculated from the target and actual dates, as in the workbook:
   On-Going, Delay, No Target, Completed Early, Completed On Time, Completed Late.
-- **Help tab.** A user guide for every role, a diagram of the data model, and this README as the setup guide.
-  The guide is also linked from the log-in page.
+- **Help tab.** The **user guide** is for everyone and is also linked from the log-in page. Administrators
+  also get a **data model** diagram, an **architecture** (component) diagram and this README as the
+  **setup guide**; the server only sends those to administrators.
 - **Sorting.** On the Tracker and Archive, click any column header to sort by it (click again to
   reverse), or use the *Sort by* menu, which also works on phones. Each tab remembers its own sort.
 - **Archive.** Tasks move to the Archive 2 days after their actual date (the old

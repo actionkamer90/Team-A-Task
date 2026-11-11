@@ -224,3 +224,23 @@ svg.erd{display:block;width:100%;min-width:980px;height:auto}
 .help-code code{background:none;padding:0;font-size:inherit}
 .seg button{flex:1 1 auto}
 .help-readme li>.help-table,.help-readme li>.help-code,.help-readme li>p{margin-top:8px}
+.help-admin-mark{font-size:10px;text-transform:uppercase;letter-spacing:.06em;font-weight:600;color:var(--accent);margin-left:6px;border:1px solid currentColor;border-radius:3px;padding:0 4px;vertical-align:1px}
+/* architecture diagram */
+svg.arch{display:block;width:100%;min-width:980px;height:auto}
+.arch text{font-family:var(--f-body);font-size:12px;fill:var(--fg)}
+.arch .arch-zone-r{fill:none;stroke:var(--muted);stroke-dasharray:6 5;stroke-width:1.2}
+.arch .arch-zone-t{font-size:12px;font-weight:600;fill:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.arch .arch-box .arch-box-r{fill:var(--accent-soft);stroke:var(--accent)}
+.arch .arch-store .arch-box-r{fill:var(--warn-soft);stroke:var(--warn)}
+.arch .arch-ext .arch-box-r{fill:var(--surface);stroke:var(--line)}
+.arch .arch-title{font-family:var(--f-head);font-size:14px;font-weight:600}
+.arch .arch-line{fill:var(--fg)}
+.arch .arch-line.code{font-family:var(--f-mono);font-size:11.5px}
+.arch .arch-link{stroke:var(--fg);stroke-width:1.4}
+.arch .arch-head{fill:var(--fg)}
+.arch .arch-lab{font-size:11px;font-weight:600;fill:var(--muted)}
+.help-legend .arch-sw-box{background:var(--accent-soft);border:1px solid var(--accent)}
+.help-legend .arch-sw-store{background:var(--warn-soft);border:1px solid var(--warn)}
+.help-legend .arch-sw-ext{background:var(--surface);border:1px solid var(--line)}
+.help-legend .arch-sw-zone{border:1px dashed var(--muted)}
+.arch .arch-lab-bg{fill:var(--surface);stroke:var(--line)}
