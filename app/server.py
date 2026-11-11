@@ -1094,6 +1094,8 @@ def load_tasks(h, tid, approved_only=False):
 def can_edit(role, my_key, t):
     if role in ("lead", "admin"):
         return True
+    if is_archived(t):  # archived tasks: only the team lead (or an admin) may change them
+        return False
     return bool(my_key) and my_key in t["lead"]
 
 
@@ -1202,8 +1204,9 @@ def proposal_fields(t, proposal):
     return out
 
 
-# ---- signed progress notes: every new or changed line gets "[dd/mm/yyyy hh:mm Name] " in front
-SIGNED_RE = re.compile(r"^\[\d{2}/\d{2}/\d{4} \d{2}:\d{2} [^\]]{1,60}\] ")
+# ---- signed progress notes: every new or changed line ends with " — Name (dd/mm/yyyy hh:mm)"
+SIGN_END_RE = re.compile(r"\s+— [^()\n]{1,60} \(\d{2}/\d{2}/\d{4} \d{2}:\d{2}\)$")
+SIGN_START_RE = re.compile(r"^\[(\d{2}/\d{2}/\d{4} \d{2}:\d{2}) ([^\]]{1,60})\] ")  # earlier format, converted on save
 PROGRESS_MAX = 12000
 
 
@@ -1213,21 +1216,26 @@ def signer_name(h, tid):
 
 
 def sign_progress(old, new, name, when=None):
-    """Sign the lines of `new` that aren't in `old` (added or edited). Unchanged and already-signed lines stay as they are."""
-    stamp = "[%s %s] " % ((when or dt.datetime.now()).strftime("%d/%m/%Y %H:%M"), re.sub(r"[\[\]\n]", "", name).strip()[:60] or "Someone")
+    """Sign the lines of `new` that aren't in `old` (added or edited) as "text — Name (dd/mm/yyyy hh:mm)".
+    Unchanged lines keep their signature. A new or edited line gets the current person's signature,
+    replacing any signature typed or copied into it, so nobody can sign a line in someone else's name."""
+    sig = " — %s (%s)" % (re.sub(r"[()\n]", "", name).strip()[:60] or "Someone", (when or dt.datetime.now()).strftime("%d/%m/%Y %H:%M"))
     left = {}
     for line in (old or "").split("\n"):
         left[line.strip()] = left.get(line.strip(), 0) + 1
     out = []
     for line in (new or "").split("\n"):
         key = line.strip()
-        if key and left.get(key):
+        if not key:
+            out.append(line)
+            continue
+        if left.get(key):
             left[key] -= 1
-            out.append(line)
-        elif not key or SIGNED_RE.match(key):
-            out.append(line)
-        else:
-            out.append(stamp + key)
+            m = SIGN_START_RE.match(key)  # unchanged line in the earlier "[date Name] text" format: same signature, new layout
+            out.append("%s — %s (%s)" % (key[m.end():], m.group(2), m.group(1)) if m else line)
+            continue
+        text = SIGN_END_RE.sub("", SIGN_START_RE.sub("", key)).strip()
+        out.append(text + sig if text else line)
     signed = "\n".join(out)
     if len(signed) > PROGRESS_MAX:
         raise bad("The progress notes are too long. Remove some older lines and save again.")
@@ -1289,6 +1297,8 @@ def api_task_update(h, task_id):
     me = h.my_person(t["team_id"])
     my_key = me and me["key"]
     if not can_edit(role, my_key, t):
+        if is_archived(t) and role not in ("lead", "admin"):
+            raise ApiError(403, "This task is archived. Only the team lead can change it.")
         raise ApiError(403, "Only the task's Lead Engineer or the team lead can change it.")
     d = parse_task(h, t["team_id"], h.body, h.team(t["team_id"]))
     d["progress"] = sign_progress(t["progress"], d["progress"], signer_name(h, t["team_id"]))
@@ -1436,6 +1446,13 @@ def request_out(h, r, tasks_by_id):
         out["changes"] = [[k, t[k], data[k]] for k in ("target", "actual_date") if k in data]  # current -> proposed
         if "actual_date" in data:
             out["backdatedDays"] = (dt.date.fromisoformat(today()) - dt.date.fromisoformat(data["actual_date"])).days
+            tg = data.get("target") or t["target"] or t["requested_target"]
+            asked_on = r["at"][:10]
+            if tg and tg < asked_on and data["actual_date"] <= tg:
+                # The target had already passed when the member sent this, yet the date they give makes it on time.
+                out["lateCheck"] = {"target": tg, "askedOn": asked_on,
+                                    "ifApproved": status_of(dict(t, actual_date=data["actual_date"], target=tg, requested_target=tg)),
+                                    "ifToday": "Completed Late"}
     elif r["kind"] == "edit" and t and r["status"] == "pending":
         out["changes"] = diff_task(t, {k: v for k, v in data.items() if k != "target"}, data.get("target"))
     elif r["kind"] == "edit":

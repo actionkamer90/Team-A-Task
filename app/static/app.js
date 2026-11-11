@@ -470,7 +470,9 @@ function taskSheet(t) {
   const help = lead ? "Saving sets the official target date. Changes are logged."
     : t?.target ? "Official target " + fmt(t.target) + ". A new date needs your team lead's approval." : "Your proposed target. Your team lead approves it.";
   const banners = [];
-  if (ro) banners.push(h("div", { class: "note", text: "You can view this task. Only its Lead Engineer and the team lead can change it." }));
+  if (ro) banners.push(h("div", { class: "note", text: src?.archived && !isLead()
+    ? "This task is archived. Only the team lead can change it. Ask your team lead if something needs correcting."
+    : "You can view this task. Only its Lead Engineer and the team lead can change it." }));
   if (t && t.approved === false) banners.push(h("div", { class: "note warn", text: lead ? "New task waiting for approval. Review it on the Approvals tab." : "This new task is waiting for your team lead's approval. You can still adjust it." }));
   if (myReq) banners.push(h("div", { class: "note warn", text: "Waiting for your team lead (sent " + fmtDT(myReq.at) + "): " + proposalText(myReq.data) + ". Proposing again replaces it." }));
   if (othersPending && !lead) banners.push(h("div", { class: "note warn", text: "Another engineer's " + pendingLabel(t.pendingFields) + " is waiting for the team lead. You can still update the other details." }));
@@ -602,6 +604,9 @@ function viewApprovals(main) {
           h("div", { class: "row between" }, h("h3", { text: requestTitle(rq) }), h("span", { class: "pill " + (rq.kind === "create" ? "info" : "warn"), text: reqKind(rq) })),
           h("div", { class: "muted small", text: rq.by + " · " + fmtDT(rq.at) }),
           h("div", { class: "hist" }, detail, rq.backdatedDays ? h("div", { class: "tgt", text: "Completed date is " + rq.backdatedDays + " day" + (rq.backdatedDays === 1 ? "" : "s") + " before today." }) : null),
+          rq.lateCheck ? h("div", { class: "note bad" }, h("b", { text: "Check before approving: " }),
+            "the target date " + fmt(rq.lateCheck.target) + " had already passed when " + rq.by + " sent this on " + fmt(rq.lateCheck.askedOn) + ". Approving records the task as ",
+            h("b", { text: rq.lateCheck.ifApproved }), " instead of ", h("b", { text: rq.lateCheck.ifToday }), ". Confirm when the work was really delivered.") : null,
           h("div", { class: "row" },
             h("button", { class: "btn primary", text: "Approve", onclick: () => decide(rq, "approve") }),
             h("button", { class: "btn", text: "Reject…", onclick: e => { rejectRow.hidden = false; e.target.hidden = true; note.focus(); } }),

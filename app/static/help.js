@@ -95,13 +95,14 @@ function helpGuide(isAdmin) {
       sec("update", "Adding and updating tasks",
         steps([
           ["Click ", B("+ New task"), ". Fill in the main task, category, urgency, customer, Lead and Support engineers, start date and target date."],
-          ["Write progress in ", B("Task progress"), ", one update per line. ", B("Add update"), " starts a new line at the top. When you save, every new or changed line is signed automatically, for example ", C("[11/11/2026 10:03 Izuan] Log collected"), ". Lines you didn't touch keep their original signature."],
+          ["Write progress in ", B("Task progress"), ", one update per line. ", B("Add update"), " starts a new line at the top. When you save, every new or changed line is signed automatically at the end, for example ", C("Log collected — Izuan (11/11/2026 10:03)"), ". Lines you didn't touch keep their original signature."],
           ["Move the percentage as work goes on."],
           ["When the work is done, set the ", B("Actual date"), ". The task moves to the Archive 2 days later."],
         ]),
         list([
           ["Only the task's Lead Engineers and the team lead can change it. Support engineers can view it."],
-          ["Changing the target date, or entering a completed date earlier than today, sends a request to the team lead. Other changes save immediately."],
+          ["Changing the target date, or entering a completed date earlier than today, sends a request to the team lead. Other changes save immediately. If the target had already passed, the team lead is warned that an earlier completed date would turn a late task into an on-time one."],
+          ["Once a task is in the Archive, only the team lead can change it."],
           ["The task's ", B("History"), " lists every change: who, when, and what it was before."],
         ])),
       sec("approve", "Approvals and My Requests",
