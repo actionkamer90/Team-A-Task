@@ -266,3 +266,13 @@ img.cust-ico{background:#fff;border:1px solid var(--line)}
 .logo-list label.btn:focus-within{outline:2px solid var(--accent);outline-offset:2px}
 .cust .cust-slot{width:24px;justify-content:flex-start}
 .logo-list .cust-ico.big{width:34px}
+/* customers tab */
+.nc-form{gap:10px}
+.nc-row{align-items:end;flex-wrap:wrap;gap:12px}
+.nc-row .field.grow{flex:1 1 240px}
+.nc-teams{display:flex;flex-wrap:wrap;gap:6px 14px;min-height:34px;align-items:center}
+.cust-table td{vertical-align:middle}
+.cust-table th.ctr,.cust-table td.ctr{text-align:center}
+.cust-table td.ctr input{width:16px;height:16px;cursor:pointer}
+.cust .cust-slot.big{width:38px}
+.nc-teams .check{padding-bottom:0;cursor:pointer}

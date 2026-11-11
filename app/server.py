@@ -349,9 +349,9 @@ def compute_kpi(team, tasks, people, frm, to):
     late = lambda t: st[t["id"]] == "Completed Late"
     early = lambda t: st[t["id"]] == "Completed Early"
     names = {p["key"]: p["name"] for p in people}
-    keys = set(p["key"] for p in people if p["active"])
-    for t in done:
-        keys.update(t["lead"] + t["support"])
+    # One row per current team member. Removed people and disabled accounts get no row,
+    # but their completed tasks still count in the team totals below.
+    keys = set(p["key"] for p in people if p["active"] and not p.get("user_disabled"))
 
     def row(name, L, S):
         C, D = len(L), len(S)
@@ -834,7 +834,7 @@ def person_out(r, invites):
 
 
 def people_rows(h, tid):
-    return h.con.execute("SELECT p.*, u.login FROM people p LEFT JOIN users u ON u.id=p.user_id WHERE p.team_id=? "
+    return h.con.execute("SELECT p.*, u.login, COALESCE(u.disabled, 0) AS user_disabled FROM people p LEFT JOIN users u ON u.id=p.user_id WHERE p.team_id=? "
                          "ORDER BY p.active DESC, p.role='lead' DESC, p.name COLLATE NOCASE", (tid,)).fetchall()
 
 
@@ -1575,6 +1575,97 @@ def api_admin_user_update(h, uid):
             raise NOT_FOUND
         h.con.execute("UPDATE users SET is_admin=? WHERE id=?", (want, uid))
     return {"ok": True}
+
+
+# ---- customers across teams (administrators). Each team keeps its own list in teams.customers;
+# this view edits those lists together and keeps each customer's logo the same in every team.
+def _team_customer_lists(con):
+    return [(r["id"], r["name"], json.loads(r["customers"])) for r in con.execute("SELECT id, name, customers FROM teams ORDER BY name COLLATE NOCASE")]
+
+
+@route("GET", "/api/admin/customers")
+def api_admin_customers(h):
+    need_admin(h)
+    teams = _team_customer_lists(h.con)
+    names = {}
+    for tid, _, custs in teams:
+        for c in custs:
+            names.setdefault(c.lower(), {"name": c, "teams": []})["teams"].append(tid)
+    open_counts = {}
+    for r in h.con.execute("SELECT LOWER(customer) AS c, COUNT(*) AS n FROM tasks WHERE actual_date IS NULL AND customer<>'' GROUP BY LOWER(customer)"):
+        open_counts[r["c"]] = r["n"]
+    logos = {}
+    for r in h.con.execute("SELECT id, team_id, name, updated_at FROM customer_logos ORDER BY updated_at DESC"):
+        logos.setdefault(r["name"].lower(), "/api/teams/%s/logos/%d?v=%s" % (r["team_id"], r["id"], re.sub(r"\D", "", r["updated_at"])))
+    out = sorted(({"name": v["name"], "teams": v["teams"], "openTasks": open_counts.get(k, 0), "logo": logos.get(k)} for k, v in names.items()),
+                 key=lambda x: x["name"].lower())
+    return {"teams": [{"id": t, "name": n} for t, n, _ in teams], "customers": out}
+
+
+@route("PUT", "/api/admin/customers")
+def api_admin_customer_put(h):
+    """Add a customer, or change which teams it belongs to. Body: {name, teams: [team ids]}."""
+    need_admin(h)
+    name = s_field(h.body, "name", 100, True)
+    want = h.body.get("teams")
+    if not isinstance(want, list) or not all(isinstance(x, str) for x in want):
+        raise bad("teams must be a list of team ids.")
+    with Tx(h.con):
+        teams = _team_customer_lists(h.con)
+        known = {t for t, _, _ in teams}
+        if set(want) - known:
+            raise bad("Unknown team: %s" % ", ".join(sorted(set(want) - known)))
+        # keep the spelling already in use, if any team has this customer
+        for _, _, custs in teams:
+            for c in custs:
+                if c.lower() == name.lower():
+                    name = c
+        logo = h.con.execute("SELECT png FROM customer_logos WHERE LOWER(name)=LOWER(?) ORDER BY updated_at DESC LIMIT 1", (name,)).fetchone()
+        for tid, _, custs in teams:
+            has = any(c.lower() == name.lower() for c in custs)
+            if tid in want and not has:
+                if len(custs) >= 300:
+                    raise bad("A team can have at most 300 customers.")
+                custs = sorted(custs + [name], key=str.lower)
+                if logo:  # the customer's logo follows it into the new team
+                    h.con.execute("INSERT OR IGNORE INTO customer_logos(team_id,name,png,updated_by,updated_at) VALUES(?,?,?,?,?)",
+                                  (tid, name, logo["png"], h.user["id"], now_iso()))
+            elif tid not in want and has:
+                custs = [c for c in custs if c.lower() != name.lower()]
+                h.con.execute("DELETE FROM customer_logos WHERE team_id=? AND LOWER(name)=LOWER(?)", (tid, name))
+            else:
+                continue
+            h.con.execute("UPDATE teams SET customers=? WHERE id=?", (json.dumps(custs), tid))
+    return {"ok": True, "name": name}
+
+
+@route("PUT", "/api/admin/customers/logo")
+def api_admin_customer_logo(h):
+    """Set or clear one customer's logo in every team that has the customer. Body: {name, png} (png empty = use initials)."""
+    need_admin(h)
+    name = s_field(h.body, "name", 100, True)
+    data = h.body.get("png") or ""
+    raw = None
+    if data:
+        if not isinstance(data, str) or len(data) > LOGO_MAX_BYTES * 2:
+            raise bad("png must be base64 text.")
+        try:
+            raw = check_png(base64.b64decode(data.split(",", 1)[-1], validate=True))
+        except ValueError:
+            raise bad("png must be base64 text.")
+    with Tx(h.con):
+        tids = [t for t, _, custs in _team_customer_lists(h.con) if any(c.lower() == name.lower() for c in custs)]
+        if not tids:
+            raise bad("No team has the customer '%s'. Assign it to a team first." % name)
+        for tid in tids:
+            if raw is None:
+                h.con.execute("DELETE FROM customer_logos WHERE team_id=? AND LOWER(name)=LOWER(?)", (tid, name))
+            else:
+                h.con.execute("DELETE FROM customer_logos WHERE team_id=? AND LOWER(name)=LOWER(?) AND name<>?", (tid, name, name))
+                h.con.execute("INSERT INTO customer_logos(team_id,name,png,updated_by,updated_at) VALUES(?,?,?,?,?) "
+                              "ON CONFLICT(team_id,name) DO UPDATE SET png=excluded.png, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+                              (tid, name, raw, h.user["id"], now_iso()))
+    return {"ok": True, "teams": len(tids)}
 
 
 @route("POST", "/api/admin/invite")

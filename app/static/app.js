@@ -125,7 +125,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 
 /* ---------- shell ---------- */
 const VIEWS = [["tracker", "Tracker", () => true], ["completed", "Archive", () => true], ["summary", "Summary", () => true],
-  ["approvals", "Approvals", () => isLead()], ["requests", "My Requests", () => !isLead() && !!myKey()], ["kpi", "KPI Dashboard", () => isLead()], ["team", "Team & Invites", () => isLead()], ["admin", "All Teams", () => S.me?.user?.isAdmin], ["help", "Help", () => true]];
+  ["approvals", "Approvals", () => isLead()], ["requests", "My Requests", () => !isLead() && !!myKey()], ["kpi", "KPI Dashboard", () => isLead()], ["team", "Team & Invites", () => isLead()], ["customers", "Customers", () => S.me?.user?.isAdmin], ["admin", "All Teams", () => S.me?.user?.isAdmin], ["help", "Help", () => true]];
 let refreshFn = null;
 function refresh() { if (refreshFn) refreshFn(); }
 function render() {
@@ -160,7 +160,7 @@ function render() {
       onclick: () => { S.view = id; store.set("tt.view", id); render(); }
     })))));
   const main = h("main", { class: "wrap" }); app.append(main);
-  ({ tracker: viewTracker, completed: viewCompleted, approvals: viewApprovals, requests: viewRequests, summary: viewSummary, kpi: viewKPI, team: viewTeam, admin: viewAdmin, help: m => helpView(m, false) })[S.view](main);
+  ({ tracker: viewTracker, completed: viewCompleted, approvals: viewApprovals, requests: viewRequests, summary: viewSummary, kpi: viewKPI, team: viewTeam, customers: viewCustomers, admin: viewAdmin, help: m => helpView(m, false) })[S.view](main);
   refresh();
 }
 function card(title, body) { return h("div", { class: "center" }, h("div", { class: "card" }, h("h2", { text: title }), body)); }
@@ -869,6 +869,69 @@ function toIconPng(file) {
     };
     rd.readAsDataURL(file);
   });
+}
+
+/* ---------- customers (admin) ---------- */
+function viewCustomers(main) {
+  const body = h("div", { class: "cust-admin" }), msg = h("p", { class: "muted m0" });
+  let data = null, q = "", confirmRemove = null;
+  const icon = c => c.logo ? h("img", { class: "cust-ico big", src: c.logo, alt: "", width: "28", height: "28" })
+    : h("span", { class: "cust-ico cust-b cust-b" + custHue(c.name) + " big" + (custInitials(c.name).length > 2 ? " wide" : ""), "aria-hidden": "true", text: custInitials(c.name) });
+  const save = async (name, teams, done) => {
+    try { await api("PUT", "/api/admin/customers", { name, teams }); toast(done); await load(); await reloadTeam(); } catch (e) { toast(e.message); await load(); }
+  };
+  const fName = h("input", { type: "text", id: "nc-name", maxlength: "100", placeholder: "e.g. CIMB Bank", required: true });
+  const fTeams = h("div", { class: "nc-teams" });
+  const addForm = h("form", { class: "panel nc-form", onsubmit: async e => {
+    e.preventDefault();
+    const name = fName.value.trim(), teams = [...fTeams.querySelectorAll("input:checked")].map(i => i.value);
+    if (!name) return toast("Enter the customer's name.");
+    if (!teams.length) return toast("Tick at least one team for the new customer.");
+    if (data.customers.some(c => c.name.toLowerCase() === name.toLowerCase())) return toast(name + " is already in the list. Tick its teams in the table instead.");
+    await save(name, teams, "Added " + name); fName.value = "";
+  } }, h("h3", { text: "Add a customer" }),
+    h("div", { class: "row nc-row" }, h("label", { class: "field grow" }, h("span", { text: "Customer name" }), fName),
+      h("div", { class: "field" }, h("span", { text: "Teams that work with this customer" }), fTeams),
+      h("button", { class: "btn primary", type: "submit", text: "Add customer" })));
+  const search = h("input", { type: "search", id: "cust-q", placeholder: "Search customers…", oninput: e => { q = e.target.value.trim().toLowerCase(); draw(); } });
+  main.append(h("div", { class: "row between" }, h("h2", { text: "Customers" })),
+    h("p", { class: "muted m0", text: "Add customers and choose which teams work with them. A team's members see its customers as suggestions when they add a task, and the customer's icon beside its name. Removing a customer from a team doesn't change tasks that already name it." }),
+    addForm, h("div", { class: "bar" }, h("label", { class: "field grow" }, h("span", { text: "Search" }), search)), msg, body);
+  function draw() {
+    if (!data) return;
+    fTeams.replaceChildren(...data.teams.map(t => h("label", { class: "check" }, h("input", { type: "checkbox", value: t.id, checked: data.teams.length === 1 }), t.name)));
+    const list = data.customers.filter(c => !q || c.name.toLowerCase().includes(q));
+    msg.textContent = data.customers.length + " customers" + (q ? " · " + list.length + " shown" : "");
+    if (!list.length) return body.replaceChildren(h("div", { class: "empty", text: data.customers.length ? "No customers match your search." : "No customers yet. Add the first one above." }));
+    body.replaceChildren(h("div", { class: "tscroll" }, h("table", { class: "cust-table" },
+      h("thead", {}, h("tr", {}, h("th", { text: "Customer" }), data.teams.map(t => h("th", { class: "ctr", text: t.name })), h("th", { class: "num", text: "Open tasks" }), h("th", { text: "Icon" }), h("th", {}))),
+      h("tbody", {}, list.map(c => {
+        const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/svg+xml", class: "sr-only", id: "cl-" + custHue(c.name) + "-" + c.name.length + "-" + c.teams.length,
+          onchange: async e => { const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+            try { const r = await api("PUT", "/api/admin/customers/logo", { name: c.name, png: await toIconPng(f) }); toast("Logo saved for " + c.name + " in " + r.teams + (r.teams === 1 ? " team" : " teams")); await load(); await reloadTeam(); } catch (x) { toast(x.message); } } });
+        const removing = confirmRemove === c.name;
+        return h("tr", {},
+          h("td", {}, h("span", { class: "cust" }, h("span", { class: "cust-slot big" }, icon(c)), h("b", { text: c.name }))),
+          data.teams.map(t => h("td", { class: "ctr" }, h("input", { type: "checkbox", checked: c.teams.includes(t.id), "aria-label": c.name + " in " + t.name,
+            onchange: e => { const teams = e.target.checked ? [...c.teams, t.id] : c.teams.filter(x => x !== t.id);
+              if (!teams.length) { e.target.checked = true; confirmRemove = c.name; return draw(); }
+              save(c.name, teams, (e.target.checked ? "Added " + c.name + " to " : "Removed " + c.name + " from ") + t.name); } }))),
+          h("td", { class: "num mono", text: c.openTasks }),
+          h("td", { class: "nowrap" }, h("label", { class: "btn small", for: file.id }, c.logo ? "Change" : "Upload", file),
+            c.logo ? h("button", { class: "btn small", type: "button", text: "Use initials", onclick: async () => {
+              try { await api("PUT", "/api/admin/customers/logo", { name: c.name, png: "" }); toast("Back to initials for " + c.name); await load(); await reloadTeam(); } catch (x) { toast(x.message); } } }) : null),
+          h("td", { class: "nowrap" }, removing
+            ? h("span", { class: "row" }, h("span", { class: "small", text: "Remove from every team?" }),
+                h("button", { class: "btn small danger", type: "button", text: "Remove", onclick: () => { confirmRemove = null; save(c.name, [], "Removed " + c.name); } }),
+                h("button", { class: "btn small", type: "button", text: "Keep", onclick: () => { confirmRemove = null; draw(); } }))
+            : h("button", { class: "btn small", type: "button", text: "Remove", onclick: () => { confirmRemove = c.name; draw(); } })));
+      })))));
+  }
+  async function load() {
+    try { data = await api("GET", "/api/admin/customers"); draw(); }
+    catch (e) { body.replaceChildren(h("p", { class: "bad-text", text: e.message })); }
+  }
+  load();
 }
 
 /* ---------- all teams (admin) ---------- */

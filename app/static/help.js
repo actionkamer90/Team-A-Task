@@ -52,7 +52,7 @@ function helpGuide(isAdmin) {
   const steps = items => h("ol", {}, items.map(i => h("li", {}, i)));
   const toc = [["start", "Getting started"], ["roles", "Who can do what"], ["tracker", "Tracker tab"], ["status", "What each status means"],
     ["update", "Adding and updating tasks"], ["approve", "Approvals and My Requests"], ["archive", "Archive"], ["summary", "Summary"],
-    ["kpi", "KPI Dashboard"], ["team", "Team & Invites"], ["admin", "All Teams (administrators)"], ["export", "Export to Excel"]];
+    ["kpi", "KPI Dashboard"], ["team", "Team & Invites"], ["admin", "Customers and All Teams"], ["export", "Export to Excel"]];
   return h("div", { class: "help-guide" },
     h("nav", { class: "help-toc", "aria-label": "User guide contents" }, h("span", { class: "lbl", text: "On this page" }),
       h("ul", {}, toc.map(([id, t]) => h("li", {}, h("a", { href: "#help-" + id, text: t, onclick: e => { e.preventDefault(); document.getElementById("help-" + id)?.scrollIntoView({ block: "start" }); } }))))),
@@ -128,8 +128,9 @@ function helpGuide(isAdmin) {
           ["Forgotten password: use ", B("Reset password link"), " on their row and send them the new link."],
           [B("Customer icons: "), "every customer shows a coloured badge with its initials. In ", B("Team settings"), " you can upload a logo for a customer instead; it is shrunk to a small icon and shown beside the customer's name everywhere."],
         ])),
-      sec("admin", "All Teams (administrators)",
-        P("Create teams, open any team, and manage administrators. To start a new team: create it, add its lead on Team & Invites, and send the lead an invite link. The lead invites the rest.")),
+      sec("admin", "Customers and All Teams (administrators)",
+        P(B("Customers"), ": every customer in one table. Add a customer, tick the teams that work with it, and upload its logo once for all of those teams. Unticking a customer's last team asks before removing it. Tasks that already name a customer keep it."),
+        P(B("All Teams"), ": create teams, open any team, and manage administrators. To start a new team: create it, add its lead on Team & Invites, and send the lead an invite link. The lead invites the rest.")),
       sec("export", "Export to Excel",
         P(B("Export to Excel"), " on the Tracker and Archive downloads an .xlsx file with the Daily Task Tracker and Archive sheets. Team leads also get the KPI Scorecard and Lead Tasks by Category sheets for the KPI period."),
         P("Questions the guide doesn't answer? Ask your team lead or the tracker's administrator."),
