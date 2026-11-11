@@ -43,9 +43,9 @@ function viewProjects(main) {
     return;
   }
   const open = id => { S.projectId = id; render(); };
-  main.append(h("div", { class: "tscroll" }, h("table", { class: "pj-table" },
+  const table = list => h("div", { class: "tscroll" }, h("table", { class: "pj-table" },
     h("thead", {}, h("tr", {}, ["Client", "Project", "Project manager", "Status", "Start", "Go-live", "Progress", "Overdue", "Tasks"].map((c, i) => h("th", { class: i >= 6 ? "num" : "", text: c })))),
-    h("tbody", {}, P.projects.map(p => h("tr", { class: "click", tabindex: "0", onclick: () => open(p.id), onkeydown: e => { if (e.key === "Enter") open(p.id); } },
+    h("tbody", {}, list.map(p => h("tr", { class: "click", tabindex: "0", onclick: () => open(p.id), onkeydown: e => { if (e.key === "Enter") open(p.id); } },
       h("td", { class: "nowrap" }, custLabel(p.client)),
       h("td", {}, h("div", { class: "task-title", text: p.name }), p.description ? h("div", { class: "task-prog", text: p.description }) : null),
       h("td", { class: "nowrap", text: p.pmName || "—" }),
@@ -54,8 +54,28 @@ function viewProjects(main) {
       h("td", { class: "mono nowrap", text: fmt(p.startDate) }), h("td", { class: "mono nowrap", text: fmt(p.goLive) }),
       h("td", { class: "num" }, h("div", { class: "pct" }, h("i", {}, h("em", { style: "width:" + Math.round(p.progress * 100) + "%" })), h("span", { class: "mono", text: pjPct(p.progress) })),
         h("div", { class: "muted small", text: p.completed + " of " + p.activities })),
-      h("td", { class: "num mono" + (p.overdue ? " bad-text" : ""), text: p.overdue }),
-      h("td", { class: "num mono", text: p.linkedTasks })))))));
+      ["Completed", "Cancelled"].includes(p.status) ? h("td", { class: "num muted", text: "—" }) : h("td", { class: "num mono" + (p.overdue ? " bad-text" : ""), text: p.overdue }),
+      h("td", { class: "num mono", text: p.linkedTasks }))))));
+  // running projects on top (soonest go-live first); completed and cancelled ones below, newest go-live first, in pages
+  const done = p => p.status === "Completed" || p.status === "Cancelled";
+  const byGoLive = (a, b) => (a.goLive || "9999").localeCompare(b.goLive || "9999") || a.name.localeCompare(b.name);
+  const running = P.projects.filter(p => !done(p)).sort(byGoLive), closed = P.projects.filter(done).sort((a, b) => byGoLive(b, a));
+  const R = S.pjRunPage || (S.pjRunPage = { page: 1, size: 20 }), C = S.pjDonePage || (S.pjDonePage = { page: 1, size: 10 });
+  const section = (list, A, label, empty) => {
+    const box = h("div");
+    const draw = () => {
+      const pages = Math.max(1, Math.ceil(list.length / A.size));
+      A.page = Math.min(Math.max(1, A.page), pages);
+      box.replaceChildren(...[list.length ? table(list.slice((A.page - 1) * A.size, A.page * A.size)) : h("p", { class: "muted m0", text: empty }),
+        list.length > 10 ? pager(A, list.length, pages, { sizes: [10, 20, 50], label, redraw: draw }) : null].filter(Boolean));
+    };
+    draw();
+    return box;
+  };
+  main.append(h("h3", { class: "pj-sec", text: "Running projects (" + running.length + ")" }),
+    section(running, R, "Running project pages", "No running projects. Completed and cancelled projects are listed below."));
+  if (closed.length) main.append(h("h3", { class: "pj-sec", text: "Completed and cancelled (" + closed.length + ")" }),
+    section(closed, C, "Completed project pages", ""));
 }
 
 function projectSheet(p) {
@@ -276,10 +296,24 @@ function planTable(pr, setStatus) {
 function linkedTasks(pr) {
   if (!pr.tasks.length) return h("p", { class: "muted m0", text: "No daily tasks are linked yet. When someone adds a task, they pick this project and its activity on the task form." });
   const names = {}; pr.phases.forEach(ph => { names[ph.id] = ph.name; ph.items.forEach(it => { names[it.id] = it.name; }); });
-  return h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["No", "Task", "Activity", "Lead", "Status"].map(c => h("th", { text: c })))),
-    h("tbody", {}, pr.tasks.map(t => h("tr", { class: "click", onclick: () => { const x = S.tasks.find(y => y.id === t.id); if (x) taskSheet(x); } },
-      h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }), h("td", { text: t.title }), h("td", { class: "small", text: names[t.itemId] || "—" }),
-      h("td", { class: "nowrap", text: t.lead.map(personName).join(" / ") }), h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status })))))));
+  // open tasks first, nearest target date first (no target at the end of them); completed tasks at the bottom
+  const list = pr.tasks.slice().sort((a, b) => (!!a.actualDate - !!b.actualDate) || (a.target || "9999").localeCompare(b.target || "9999") || a.no - b.no);
+  const A = S.pjTaskPage && S.pjTaskPage.id === pr.id ? S.pjTaskPage : (S.pjTaskPage = { id: pr.id, page: 1, size: 10 });
+  const box = h("div");
+  const draw = () => {
+    const pages = Math.max(1, Math.ceil(list.length / A.size));
+    A.page = Math.min(Math.max(1, A.page), pages);
+    const rows = list.slice((A.page - 1) * A.size, A.page * A.size);
+    box.replaceChildren(...[h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["No", "Task", "Activity", "Lead", "Target", "Completed", "Status"].map(c => h("th", { text: c })))),
+      h("tbody", {}, rows.map(t => h("tr", { class: "click" + (t.actualDate ? " pj-task-done" : ""), onclick: () => { const x = S.tasks.find(y => y.id === t.id); if (x) taskSheet(x); } },
+        h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }), h("td", { text: t.title }), h("td", { class: "small", text: names[t.itemId] || "—" }),
+        h("td", { class: "nowrap", text: t.lead.map(personName).join(" / ") }),
+        h("td", { class: "mono nowrap", text: fmt(t.target) }), h("td", { class: "mono nowrap", text: fmt(t.actualDate) }),
+        h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status }))))))),
+      list.length > 10 ? pager(A, list.length, pages, { sizes: [10, 25, 50], label: "Linked task pages", redraw: draw }) : null].filter(Boolean));
+  };
+  draw();
+  return box;
 }
 
 /* ---------- Gantt timeline (SVG, like the Excel timeline: one column per working day) ---------- */

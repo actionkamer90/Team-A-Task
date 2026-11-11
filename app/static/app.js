@@ -460,11 +460,13 @@ function viewCompleted(main) {
     A.page = Math.min(Math.max(1, A.page), pages);
     const first = (A.page - 1) * A.size, list = all.slice(first, first + A.size);
     count.textContent = all.length + " task" + (all.length === 1 ? "" : "s") + (from || to ? " completed " + (from && to ? fmt(from) + " – " + fmt(to) : from ? "from " + fmt(from) : "up to " + fmt(to)) : "");
-    body.replaceChildren(sortControls("completed"), taskTable(list, true), all.length > ARCH_SIZES[0] ? pager(A, all.length, pages) : null); afterSortRender();
+    body.replaceChildren(...[sortControls("completed"), taskTable(list, true), all.length > ARCH_SIZES[0] ? pager(A, all.length, pages) : null].filter(Boolean)); afterSortRender();
   };
 }
-function pager(A, total, pages) {
-  const go = n => { A.page = n; refresh(); document.querySelector(".pager")?.scrollIntoView({ block: "nearest" }); };
+function pager(A, total, pages, opt) {
+  // A: {page, size}; opt: {sizes, store, label}
+  opt = opt || { sizes: ARCH_SIZES, store: "tt.arch.size", label: "Archive pages" };
+  const go = n => { A.page = n; (opt.redraw || refresh)(); };
   // page numbers: first, last, and two either side of the current page
   const nums = [];
   for (let n = 1; n <= pages; n++) if (n === 1 || n === pages || Math.abs(n - A.page) <= 2) nums.push(n);
@@ -473,11 +475,11 @@ function pager(A, total, pages) {
     if (i && n - nums[i - 1] > 1) btns.push(h("span", { class: "muted", text: "…" }));
     btns.push(h("button", { class: "btn small" + (n === A.page ? " primary" : ""), "aria-current": n === A.page ? "page" : null, "aria-label": "Page " + n, text: String(n), onclick: () => go(n) }));
   });
-  const size = h("select", { id: "f-arch-size", "aria-label": "Tasks per page", onchange: e => { A.size = Number(e.target.value); store.set("tt.arch.size", String(A.size)); refresh(); } },
-    ARCH_SIZES.map(n => h("option", { value: String(n), text: n + " per page" })));
+  const size = h("select", { class: "pager-size", "aria-label": "Rows per page", onchange: e => { A.size = Number(e.target.value); A.page = 1; if (opt.store) store.set(opt.store, String(A.size)); (opt.redraw || refresh)(); } },
+    opt.sizes.map(n => h("option", { value: String(n), text: n + " per page" })));
   size.value = String(A.size);
   const first = (A.page - 1) * A.size + 1, last = Math.min(total, A.page * A.size);
-  return h("nav", { class: "pager", "aria-label": "Archive pages" },
+  return h("nav", { class: "pager", "aria-label": opt.label },
     h("span", { class: "muted small", text: "Showing " + first + "–" + last + " of " + total }),
     h("div", { class: "row pager-btns" }, h("button", { class: "btn small", text: "‹ Previous", disabled: A.page === 1, onclick: () => go(A.page - 1) }), btns,
       h("button", { class: "btn small", text: "Next ›", disabled: A.page === pages, onclick: () => go(A.page + 1) })), size);

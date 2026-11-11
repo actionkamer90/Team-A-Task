@@ -1928,7 +1928,7 @@ def api_project(h, pid):
     tasks = h.con.execute("SELECT t.id, t.no, t.title, t.lead, t.project_item_id, t.actual_date, t.target, t.requested_target FROM tasks t "
                           "WHERE t.project_id=? ORDER BY t.no", (p["id"],)).fetchall()
     out["tasks"] = [{"id": t["id"], "no": t["no"], "title": t["title"], "lead": json.loads(t["lead"]), "itemId": t["project_item_id"],
-                     "status": status_of(t)} for t in tasks]
+                     "target": t["target"] or t["requested_target"], "actualDate": t["actual_date"], "status": status_of(t)} for t in tasks]
     return out
 
 

@@ -354,3 +354,5 @@ tr.pj-ready td{box-shadow:inset 0 0 0 9999px rgba(46,160,90,.08)}
 .pager-btns{gap:4px;flex-wrap:wrap}
 .pager-btns .btn{min-width:34px}
 .pager select{width:auto}
+.pj-sec{margin:18px 0 8px;font-size:15px}
+tr.pj-task-done td{color:var(--muted)}

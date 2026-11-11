@@ -125,6 +125,8 @@ function helpGuide(isAdmin) {
           [B("Linked tasks done: "), "the Plan shows how many of an activity's linked daily tasks are completed (e.g. 2 / 2 linked tasks done). When all of them are, the row turns green and the Project Manager sees a ✓ Mark completed button and a note at the top of the Plan to check and close the activity."],
           [B("Timeline: "), "a Gantt chart with one column per working day, phase colours, ◆ for milestones and today's column in red. Hover over a bar for its dates and status."],
           [B("Your daily tasks: "), "when a task belongs to a project, pick the project and its phase or activity on the task form; the client fills in by itself. When you pick a phase or activity, the target date is its end date in the plan: it is set straight away (no approval needed), can't be changed on the task, and moves by itself when the plan's dates change (completed tasks keep theirs). Write the details in the task as usual. The task then shows under the project, and the Tracker can be filtered by project."],
+          [B("Project list: "), "running projects (Planned, Active, On Hold) are at the top, soonest go-live first. Completed and cancelled projects move to the Completed and cancelled list underneath, newest first, 10 a page. Set a project's status to Completed in Edit details when it is done."],
+          [B("Linked daily tasks: "), "on a project's page, open tasks come first, nearest target date first; completed tasks are at the bottom. 10 a page (or 25 or 50)."],
           [B("Export to Excel: "), "the plan in the same layout as the team's timeline workbook, with the Gantt colours and a Holidays sheet. Values only, no formulas."],
         ])),
       sec("summary", "Summary",
