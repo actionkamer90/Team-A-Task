@@ -30,7 +30,7 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
   scheduled in working days from the start date (weekends and the project's own public holidays skipped), owner
   and status per activity, and a Gantt timeline. Overdue activities make the project show **At Risk**. One
   template (an implementation project) pre-fills the plan. Daily tasks can name a project and one of its
-  activities. *Export to Excel* writes the plan in the team's timeline layout (values only).
+  activities; the task's target date is then the activity's end date, locked, and it moves when the plan changes. *Export to Excel* writes the plan in the team's timeline layout (values only).
 - **Project Manager role.** A team lead makes a member a Project Manager on *Team & Invites*; they can create
   projects and run the plans of projects they manage.
 - **Clients (team leads and administrators).** Every client with a short name (e.g. RHB) and full name

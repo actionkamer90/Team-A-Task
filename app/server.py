@@ -1203,6 +1203,31 @@ def is_outside(k):
     return k.startswith(OUTSIDE)
 
 
+def plan_end_dates(con, pid):
+    """{project item id: end date} for one project's plan, in working days from its start date."""
+    p = con.execute("SELECT start_date FROM projects WHERE id=?", (pid,)).fetchone()
+    rows = con.execute("SELECT id, end_day FROM project_items WHERE project_id=?", (pid,)).fetchall()
+    if not p or not rows:
+        return {}
+    hol = {r["date"] for r in con.execute("SELECT date FROM project_holidays WHERE project_id=?", (pid,))}
+    days = workday_dates(p["start_date"], hol, max(r["end_day"] for r in rows))
+    return {r["id"]: days[r["end_day"]].isoformat() for r in rows}
+
+
+def sync_plan_targets(h, pid):
+    """When a plan's dates move, open daily tasks linked to its activities move with them. Completed tasks keep the
+    target they were completed against, so their on-time / late status doesn't change afterwards."""
+    ends = plan_end_dates(h.con, pid)
+    moved = 0
+    for r in h.con.execute("SELECT * FROM tasks WHERE project_id=? AND project_item_id IS NOT NULL AND (actual_date IS NULL OR actual_date='')", (pid,)).fetchall():
+        new = ends.get(r["project_item_id"])
+        if new and new != r["target"]:
+            set_target(h, dict(r), new, write_log=False)
+            log(h, r["id"], "target", {"from": r["target"], "to": new, "plan": True})
+            moved += 1
+    return moved
+
+
 def parse_task(h, tid, body, team):
     keys = {r["key"] for r in h.con.execute("SELECT key FROM people WHERE team_id=?", (tid,))}
 
@@ -1261,6 +1286,7 @@ def parse_task(h, tid, body, team):
             if not h.con.execute("SELECT 1 FROM project_items WHERE id=? AND project_id=?", (iid, pid)).fetchone():
                 raise bad("Choose an activity from this project's plan.")
             d["project_item_id"] = iid
+            d["plan_target"] = plan_end_dates(h.con, pid).get(iid)  # the target date comes from the plan and can't be changed
     d["support"] = [k for k in d["support"] if k not in d["lead"]]  # a lead engineer isn't also listed as support
     if d["actual_date"]:
         d["percent"] = 100
@@ -1360,8 +1386,10 @@ def api_task_create(h, tid):
     team = h.team(tid)
     d = parse_task(h, tid, h.body, team)
     d["progress"] = sign_progress("", d["progress"], signer_name(h, tid))
-    target = d_field(h.body, "target")
+    plan_t = d.pop("plan_target", None)
+    target = plan_t or d_field(h.body, "target")
     lead = role in ("lead", "admin")
+    official = lead or bool(plan_t)  # a lead's date, or the plan's, is the official target; a member's is a request
     me = h.my_person(tid)
     if not lead and me["key"] not in d["lead"]:
         raise bad("Add yourself as a Lead Engineer. You can only manage tasks you lead.")
@@ -1380,13 +1408,13 @@ def api_task_create(h, tid):
             "target,target_set_by,target_set_at,actual_date,created_by,created_at,updated_by,updated_at,approved,project_id,project_item_id) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, no, d["category"], d["title"], d["progress"], d["percent"], d["urgency"], d["customer"], json.dumps(d["lead"]),
-             json.dumps(d["support"]), d["start_date"], target, target if lead else None, h.user["id"] if lead and target else None,
-             ts if lead and target else None, d["actual_date"], h.user["id"], ts, h.user["id"], ts, 1, d["project_id"], d["project_item_id"]))
+             json.dumps(d["support"]), d["start_date"], target, target if official else None, h.user["id"] if official and target else None,
+             ts if official and target else None, d["actual_date"], h.user["id"], ts, h.user["id"], ts, 1, d["project_id"], d["project_item_id"]))
         task_id = cur.lastrowid
         log(h, task_id, "create", [])
-        if lead and target:
-            log(h, task_id, "target", {"from": None, "to": target})
-        proposal = {} if lead else {k: v for k, v in (("target", target), ("actual_date", backdated)) if v}
+        if official and target:
+            log(h, task_id, "target", {"from": None, "to": target, "plan": True} if plan_t else {"from": None, "to": target})
+        proposal = {} if lead else {k: v for k, v in (("target", None if plan_t else target), ("actual_date", backdated)) if v}
         if proposal:
             h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
                           (task_id, tid, "edit", json.dumps(proposal), h.user["id"], ts))
@@ -1416,7 +1444,8 @@ def api_task_update(h, task_id):
         raise ApiError(403, "Only the task's Lead Engineer or the team lead can change it.")
     d = parse_task(h, t["team_id"], h.body, h.team(t["team_id"]))
     d["progress"] = sign_progress(t["progress"], d["progress"], signer_name(h, t["team_id"]))
-    target = d_field(h.body, "target") if "target" in h.body else (t["target"] or t["requested_target"])
+    plan_t = d.pop("plan_target", None)
+    target = plan_t or (d_field(h.body, "target") if "target" in h.body else (t["target"] or t["requested_target"]))
     lead = role in ("lead", "admin")
     if not lead and my_key not in d["lead"]:
         raise bad("Keep yourself as a Lead Engineer, or ask your team lead to hand the task over.")
@@ -1424,6 +1453,12 @@ def api_task_update(h, task_id):
     if not changes:
         return {"ok": True, "changed": False}
     with Tx(h.con):
+        if plan_t and plan_t != t["target"]:
+            # linked to a project activity: the target is the activity's end date, set straight away for anyone
+            set_target(h, t, plan_t, write_log=False)
+            log(h, t["id"], "target", {"from": t["target"], "to": plan_t, "plan": True})
+            t["target"] = plan_t
+            target = plan_t
         if lead:
             field_changes = [c for c in changes if c[0] != "target"]
             if field_changes:
@@ -1494,6 +1529,8 @@ def api_task_target(h, task_id):
     new = d_field(h.body, "target")
     if not new:
         raise bad("Choose a target date.")
+    if t["project_item_id"]:
+        raise bad("This task's target date follows its project activity. Change the dates in the project's plan.")
     if new == t["target"]:
         return {"ok": True, "changed": False}
     with Tx(h.con):
@@ -1628,7 +1665,7 @@ def api_request_approve(h, rid):
         if r["kind"] == "create":
             h.con.execute("UPDATE tasks SET approved=1, updated_at=? WHERE id=?", (now_iso(), t["id"]))
             applied = []
-            if t["requested_target"] and not t["target"]:
+            if t["requested_target"] and not t["target"] and not t["project_item_id"]:
                 set_target(h, t, t["requested_target"], write_log=False)
                 applied.append(["target", None, t["requested_target"]])
             log(h, t["id"], "approve", {"request": "create", "of": r["by_user"], "applied": applied})
@@ -1639,7 +1676,7 @@ def api_request_approve(h, rid):
                 ch = [["actual_date", t["actual_date"], data["actual_date"]]] + ([["percent", t["percent"], 100]] if t["percent"] != 100 else [])
                 write_fields(h, t["id"], {"actual_date": data["actual_date"], "percent": 100}, r["by_user"])
                 applied += ch
-            if data.get("target") and data["target"] != t["target"]:
+            if data.get("target") and data["target"] != t["target"] and not t["project_item_id"]:  # a linked task keeps the plan's date
                 set_target(h, t, data["target"], write_log=False)
                 applied.append(["target", t["target"], data["target"]])
             log(h, t["id"], "approve", {"request": "edit", "of": r["by_user"], "applied": applied})
@@ -1907,7 +1944,8 @@ def api_project_update(h, pid):
     with Tx(h.con):
         h.con.execute("UPDATE projects SET client=?, name=?, description=?, pm_person_id=?, start_date=?, status=?, updated_at=? WHERE id=?",
                       (f["client"], f["name"], f["description"], f["pm_person_id"], f["start_date"], f["status"], now_iso(), p["id"]))
-    return {"ok": True}
+        moved = sync_plan_targets(h, p["id"])  # a new start date moves the linked tasks' targets
+    return {"ok": True, "tasksMoved": moved}
 
 
 @route("DELETE", "/api/projects/([0-9]+)")
@@ -2023,7 +2061,8 @@ def api_project_plan(h, pid):
                     raise bad("Each holiday needs a date.")
                 h.con.execute("INSERT OR REPLACE INTO project_holidays(project_id,date,name) VALUES(?,?,?)", (p["id"], d, s_field(x, "name", 100)))
         h.con.execute("UPDATE projects SET updated_at=? WHERE id=?", (now_iso(), p["id"]))
-    return {"ok": True}
+        moved = sync_plan_targets(h, p["id"])  # linked open tasks follow the new activity dates
+    return {"ok": True, "tasksMoved": moved}
 
 
 def _weeks_label(a, b):

@@ -527,10 +527,12 @@ function taskSheet(t) {
           ph.items.map((it, k) => h("option", { value: String(it.id), text: (i + 1) + "." + (k + 1) + " " + (it.kind === "milestone" ? "◆ " : "") + it.name })))));
       fItem.value = keep ? String(keep) : "";
       fItem.disabled = locked;
+      planTarget();
       if (pr.client && !locked) { fCust.value = pr.client; fCust.disabled = true; fCust.dispatchEvent(new Event("input")); }
     } catch (e) { fItem.replaceChildren(h("option", { value: "", text: "Couldn't load the plan" })); }
   };
-  fProj.addEventListener("change", () => { if (!fProj.value) fCust.disabled = locked; fillItems(fProj.value, null); });
+  fProj.addEventListener("change", () => { if (!fProj.value) fCust.disabled = locked; fillItems(fProj.value, null); planTarget(); });
+  fItem.addEventListener("change", () => planTarget());
   if (T.projectId) fillItems(String(T.projectId), T.projectItemId);
   const fUrg = h("select", { id: "t-urg", disabled: locked }, tm.urgencies.map(u => h("option", { value: u, text: u }))); fUrg.value = T.urgency;
   const fPct = h("input", { type: "number", id: "t-pct", min: "0", max: "100", step: "5", value: String(T.percent || 0), disabled: locked });
@@ -547,6 +549,23 @@ function taskSheet(t) {
   const fTarget = h("input", { type: "date", id: "t-target", value: T.effTarget || "", disabled: locked || (othersPending && !lead) });
   const help = lead ? "Saving sets the official target date. Changes are logged."
     : t?.target ? "Official target " + fmt(t.target) + ". A new date needs your team lead's approval." : "Your proposed target. Your team lead approves it.";
+  const tHelp = h("small", { class: "muted", text: help }), tLabel = h("span", { text: "Target date" + (lead ? "" : " (lead approves)") });
+  const tFree = fTarget.disabled, ownTarget = { v: fTarget.value };
+  // linked to a project phase / activity: the target is its end date in the plan, and can't be changed here
+  function planTarget() {
+    const pr = fProj.value && S.pdetail?.[fProj.value], id = Number(fItem.value);
+    let it = null;
+    if (pr && id) pr.phases.forEach(ph => { if (ph.id === id) it = ph; ph.items.forEach(x => { if (x.id === id) it = x; }); });
+    if (it) {
+      if (!fTarget.dataset.plan) ownTarget.v = fTarget.value;
+      fTarget.value = it.endDate; fTarget.disabled = true; fTarget.dataset.plan = "1";
+      tLabel.textContent = "Target date (from the project plan)";
+      tHelp.textContent = "The end date of " + it.name + " in the plan. It moves when the plan's dates change; to change it, change the plan.";
+    } else if (fTarget.dataset.plan) {
+      delete fTarget.dataset.plan; fTarget.value = ownTarget.v; fTarget.disabled = tFree;
+      tLabel.textContent = "Target date" + (lead ? "" : " (lead approves)"); tHelp.textContent = help;
+    }
+  }
   const banners = [];
   if (ro) banners.push(h("div", { class: "note", text: src?.archived && !isLead()
     ? "This task is archived. Only the team lead can change it. Ask your team lead if something needs correcting."
@@ -575,7 +594,7 @@ function taskSheet(t) {
     h("div", { class: "field" }, h("span", { class: "lbl", text: "Lead engineer" }), fLead),
     h("div", { class: "field" }, h("span", { class: "lbl", text: "Support engineer" }), fSup),
     h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Start date" }), fStart),
-      h("label", { class: "field" }, h("span", { text: "Target date" + (lead ? "" : " (lead approves)") }), fTarget, h("small", { class: "muted", text: help }))),
+      h("label", { class: "field" }, tLabel, fTarget, tHelp)),
     h("label", { class: "field w50" }, h("span", { text: "Actual (completed) date" }), fActual,
       lead ? null : h("small", { class: "muted", text: "Use today's date. An earlier date needs your team lead's approval." })),
     t ? h("p", { class: "muted small m0", text: "Status: " + t.status + (t.updatedAt ? " · last updated " + fmtDT(t.updatedAt) : "") }) : null,
@@ -588,7 +607,8 @@ function taskSheet(t) {
     if (!leads.length) return toast("Choose at least one Lead Engineer.");
     if (!lead && !leads.includes(mk)) return toast("Keep yourself as a Lead Engineer. You can only manage tasks you lead.");
     const data = { category: fCat.value, title: fTitle.value, customer: fCust.value, urgency: fUrg.value, percent: Number(fPct.value) || 0, progress: fProg.value,
-      lead: leads, support: fSup.value(), startDate: fStart.value || null, actualDate: fActual.value || null, target: fTarget.value || null,
+      lead: leads, support: fSup.value(), startDate: fStart.value || null, actualDate: fActual.value || null,
+      ...(fTarget.dataset.plan ? {} : { target: fTarget.value || null }),
       projectId: fProj.value ? Number(fProj.value) : null, projectItemId: fProj.value && fItem.value ? Number(fItem.value) : null };
     save.disabled = true;
     try {
@@ -637,7 +657,8 @@ async function loadHistory(t, box) {
       else if (e.kind === "approve") lines = [h("div", { class: "tgt", text: e.changes.request === "create" ? "Approved the new task from " + e.changes.of
           : "Approved " + e.changes.of + "'s request" + (e.changes.applied?.length ? ":" : "") }), ...asked(e.changes.applied)];
       else if (e.kind === "reject") lines = [h("div", { class: "tgt", text: "Rejected " + e.changes.of + "'s request" + (e.changes.note ? " (" + e.changes.note + ")" : "") + (e.changes.fields?.length ? ":" : "") }), ...asked(e.changes.fields)];
-      else if (e.kind === "target") lines = [h("div", { class: "tgt", text: e.changes.from ? "Changed the official target: " + fmt(e.changes.from) + " → " + fmt(e.changes.to) : "Set the official target: " + fmt(e.changes.to) })];
+      else if (e.kind === "target") lines = [h("div", { class: "tgt", text: (e.changes.from ? "Changed the official target: " + fmt(e.changes.from) + " → " + fmt(e.changes.to) : "Set the official target: " + fmt(e.changes.to))
+        + (e.changes.plan ? " (from the project plan: the activity's end date)" : "") })];
       else lines = e.changes.map(([f, a, b]) => h("div", { text: f === "progress" ? "Updated the progress notes" : (LOG_LABEL[f] || f) + ": " + describe(f, a) + " → " + describe(f, b) }));
       box.append(h("div", { class: "ev" }, h("div", {}, h("b", { text: e.by }), h("span", { class: "mono", text: "  ·  " + fmtDT(e.at) })), lines));
     });
