@@ -91,6 +91,27 @@ class CustomerAndKpiTests(unittest.TestCase):
         self.assertEqual(ap["changes"]["applied"], [["target", "2026-09-20", "2026-11-13"]])
         self.assertFalse(any(e["kind"] == "target" and e["at"] == at for e in hist))  # folded into the approval
 
+    def test_request_history_shows_dates(self):
+        # a member creating a task with a target: the request is in the history with its date
+        T = test_api.TrackerTest
+        s, r, _ = T.member.req("POST", "/api/teams/automation/tasks", {"category": "Tickets", "title": "New with target", "lead": ["bob"],
+                                                                     "target": "2026-12-01", "startDate": "2026-11-01"})
+        self.assertEqual((s, r["pending"]), (200, ["target"]))
+        hist = T.member.req("GET", "/api/tasks/%d/history" % r["id"])[1]["entries"]
+        req = next(e for e in hist if e["kind"] == "request")
+        self.assertEqual((req["by"], req["changes"]["fields"]), ("Bob", [["target", None, "2026-12-01"]]))
+        # entries saved by the earlier version held only the requested value
+        con = server.connect()
+        bob = con.execute("SELECT id FROM users WHERE login='bob'").fetchone()["id"]
+        with server.Tx(con):
+            con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,?,?,?)", (r["id"], "2026-11-10T15:08:00+00:00", bob, "create", "[]"))
+            con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,?,?,?)", (r["id"], "2026-11-10T15:08:00+00:00", bob, "request", '{"target": "2026-11-13"}'))
+            con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,?,?,?)", (r["id"], "2026-11-10T16:00:00+00:00", bob, "request", '{"target": "2026-11-20"}'))
+        hist = T.member.req("GET", "/api/tasks/%d/history" % r["id"])[1]["entries"]
+        old = {e["at"]: e["changes"]["fields"] for e in hist if e["kind"] == "request" and e["at"].startswith("2026-11-10")}
+        self.assertEqual(old["2026-11-10T15:08:00+00:00"], [["target", None, "2026-11-13"]])  # asked with the new task: nothing before
+        self.assertEqual(old["2026-11-10T16:00:00+00:00"], [["target", "?", "2026-11-20"]])   # earlier date wasn't saved
+
 
 if __name__ == "__main__":
     unittest.main()

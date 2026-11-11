@@ -1300,6 +1300,7 @@ def api_task_create(h, tid):
         if proposal:
             h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
                           (task_id, tid, "edit", json.dumps(proposal), h.user["id"], ts))
+            log(h, task_id, "request", {"fields": [[k, None, v] for k, v in proposal.items()]})
     return {"id": task_id, "no": no, "pending": sorted(proposal)}
 
 
@@ -1445,6 +1446,14 @@ def api_task_history(h, task_id):
             elif o["kind"] == "edit" and o["user_id"] == a["changes"].get("of") and o["user_id"] != a["user_id"]:
                 a["changes"]["applied"] += o["changes"]
                 folded.add(o["id"])
+    # Request entries from an earlier version saved only the requested values ({"target": "2026-11-13"}).
+    # Show them as fields; the date before was empty if the request came with a new task, otherwise not recorded.
+    created_at = {(r["at"], r["user_id"]) for r in rows if r["kind"] == "create"}
+    for r in rows:
+        ch = r["changes"]
+        if r["kind"] in ("request", "withdraw") and isinstance(ch, dict) and "fields" not in ch:
+            was = None if (r["at"], r["user_id"]) in created_at else "?"
+            r["changes"] = {"fields": [[k, was, ch[k]] for k in ("target", "actual_date") if ch.get(k)]}
     entries = []
     for r in rows:
         if r["id"] in folded:

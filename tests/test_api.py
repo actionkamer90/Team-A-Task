@@ -149,7 +149,7 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(t["percent"], 40)
         hist = self.member.req("GET", "/api/tasks/%d/history" % tid)[1]["entries"]
         kinds = [e["kind"] for e in hist]
-        self.assertEqual(kinds, ["edit", "target", "create"])
+        self.assertEqual(kinds, ["edit", "target", "request", "create"])  # the member's proposed target is in the history too
         self.assertIn(["percent", 0, 40], hist[0]["changes"])
         self.assertEqual(hist[1]["changes"], {"from": None, "to": "2027-01-15"})
         self.assertEqual(hist[1]["by"], "Alice")

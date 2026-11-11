@@ -580,6 +580,7 @@ function taskSheet(t) {
 const LOG_LABEL = { category: "Category", title: "Main task", customer: "Customer", urgency: "Urgency", percent: "Task percentage", lead: "Lead engineer",
   support: "Support engineer", start_date: "Start date", requested_target: "Requested target", actual_date: "Actual date", target: "Target date" };
 function describe(f, v) {
+  if (v === "?") return "(not recorded)";
   if (v == null || v === "" || (Array.isArray(v) && !v.length)) return "(empty)";
   if (Array.isArray(v)) return v.map(personName).join(" / ");
   if (/date|target/.test(f)) return fmt(v);
