@@ -146,6 +146,7 @@ already open show a bar asking people to reload.
 | Forgot the administrator password | `docker compose exec app python server.py admin-link` (prints a reset link) |
 | Back up the database | `docker compose exec app python server.py backup /data/backup.db && docker compose cp app:/data/backup.db ./backups/tracker-$(date +%F).db` |
 | See logs | `docker compose logs -f app` |
+| Load customer icons in bulk | Copy a folder of PNGs named after the customers (e.g. `RHB.png`) into the container with `podman cp logos team-task-tracker:/data/logos`, then run `podman exec team-task-tracker python server.py import-logos /data/logos --team-id team-a` (add `--dry-run` first to check; existing logos are kept unless you add `--replace`) |
 
 Back up regularly, for example with a daily cron job running the backup command.
 

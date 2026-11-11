@@ -68,6 +68,26 @@ class LogoTests(unittest.TestCase):
         self.assertEqual(test_api.Client().req("GET", src)[0], 401)
         self.assertEqual(self.lead.req("DELETE", self.url, {"name": "Acme"})[0], 200)
 
+    def test_import_logos_command(self):
+        import subprocess
+        import tempfile
+        d = tempfile.mkdtemp()
+        for n, data in (("acme.png", png(64, 64)), ("Nobody Inc.png", png(64, 64)), ("notes.txt", b"x")):
+            with open(os.path.join(d, n), "wb") as f:
+                f.write(data)
+        srv = os.path.join(os.path.dirname(__file__), "..", "app", "server.py")
+        run = lambda *args: subprocess.run([sys.executable, srv, "import-logos", d, "--team-id", "automation", *args],
+                                           capture_output=True, text=True, env=dict(os.environ)).stdout
+        out = run("--dry-run")
+        self.assertIn("would set Acme", out)  # file names match customers case-insensitively
+        self.assertIn("skip  Nobody Inc", out)
+        self.assertNotIn("Acme", self.lead.req("GET", "/api/teams/automation")[1]["logos"])
+        self.assertIn("Saved 1 logo", run())
+        self.assertIn("Acme", self.lead.req("GET", "/api/teams/automation")[1]["logos"])
+        self.assertIn("keep  Acme", run())  # existing logos are kept unless --replace
+        self.assertIn("Saved 1 logo", run("--replace"))
+        self.assertEqual(self.lead.req("DELETE", self.url, {"name": "Acme"})[0], 200)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,8 @@ Admin: python app/server.py admin-link     (prints a one-time link to set or res
        python app/server.py import FILE    (create a team with its people and tasks from an import file)
        python app/server.py make-admin LOGIN   (give an existing account administrator access)
        python app/server.py invite-admin       (one-time link that creates a new administrator account)
+       python app/server.py import-logos FOLDER_OR_ZIP --team-id ID [--replace] [--dry-run]
+                                               (customer icons from PNG files named after the customers)
 """
 import base64
 import datetime as dt
@@ -1705,6 +1707,57 @@ if __name__ == "__main__":
             tok, exp = make_link(hh, "setup")
         base = BASE_URL or "http://<this-server>:%s" % os.environ.get("TT_PORT", "8080")
         print("Send this one-time link to the new administrator (valid %d days):\n\n  %s/#invite=%s\n" % (INVITE_DAYS, base, tok))
+    elif cmd == "import-logos":
+        import argparse
+        import zipfile
+        ap = argparse.ArgumentParser(prog="server.py import-logos", description="Load customer icons from PNG files named after the customers, e.g. 'Hong Leong Bank.png'.")
+        ap.add_argument("source", help="folder or .zip file with the PNG files")
+        ap.add_argument("--team-id", required=True, help="team id, e.g. team-a")
+        ap.add_argument("--replace", action="store_true", help="also replace logos that are already set (by default they are kept)")
+        ap.add_argument("--dry-run", action="store_true", help="show what would happen without saving anything")
+        a = ap.parse_args(sys.argv[2:])
+        files = {}
+        if zipfile.is_zipfile(a.source):
+            with zipfile.ZipFile(a.source) as z:
+                for n in z.namelist():
+                    if n.lower().endswith(".png") and not n.endswith("/"):
+                        files[os.path.splitext(os.path.basename(n))[0]] = z.read(n)
+        elif os.path.isdir(a.source):
+            for n in sorted(os.listdir(a.source)):
+                if n.lower().endswith(".png"):
+                    with open(os.path.join(a.source, n), "rb") as f:
+                        files[os.path.splitext(n)[0]] = f.read()
+        else:
+            sys.exit("Not a folder or .zip file: %s" % a.source)
+        init_db()
+        con = connect()
+        row = con.execute("SELECT customers FROM teams WHERE id=?", (a.team_id,)).fetchone()
+        if not row:
+            sys.exit("No team with id '%s'. Team ids are shown in the address list on All Teams." % a.team_id)
+        by_lower = {c.lower(): c for c in json.loads(row["customers"])}
+        have = {r["name"] for r in con.execute("SELECT name FROM customer_logos WHERE team_id=?", (a.team_id,))}
+        saved = 0
+        with Tx(con):
+            for stem, raw in sorted(files.items()):
+                name = by_lower.get(stem.strip().lower())
+                if not name:
+                    print("  skip  %-22s no customer with this name in the team" % stem)
+                    continue
+                if name in have and not a.replace:
+                    print("  keep  %-22s already has a logo (use --replace to overwrite)" % name)
+                    continue
+                try:
+                    check_png(raw)
+                except ApiError as e:
+                    print("  skip  %-22s %s" % (name, e.msg))
+                    continue
+                if not a.dry_run:
+                    con.execute("INSERT INTO customer_logos(team_id,name,png,updated_by,updated_at) VALUES(?,?,?,NULL,?) "
+                                "ON CONFLICT(team_id,name) DO UPDATE SET png=excluded.png, updated_by=NULL, updated_at=excluded.updated_at",
+                                (a.team_id, name, raw, now_iso()))
+                saved += 1
+                print("  %s %s" % ("would set" if a.dry_run else "set  ", name))
+        print("%s %d logo(s) for team '%s'." % ("Dry run: would save" if a.dry_run else "Saved", saved, a.team_id))
     elif cmd == "import" and len(sys.argv) == 3:
         init_db()
         with open(sys.argv[2], encoding="utf-8") as f:
