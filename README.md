@@ -29,7 +29,7 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Customer icons.** Every customer name has a small icon: a coloured badge with its initials, or a logo a
   team lead uploads in *Team settings* (stored as a 64 × 64 PNG in the database).
 - **Signed progress notes.** When someone saves a task, every new or changed line in Task progress is
-  signed at the end with their name and the date and time, e.g. `Log collected — Izuan (11/11/2026 10:03)`.
+  signed at the start with the date, time and their name, e.g. `[11/11/2026 10:33 Khaidir] Log collected`.
 - **Archived tasks are locked for members.** Only the team lead (or an administrator) can change a task
   once it is in the Archive.
 - **Backdated completions need the lead.** A member's completed date earlier than today waits for the

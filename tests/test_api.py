@@ -282,7 +282,7 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual((s, r["pending"]), (200, []))
         t = self._task(M, tid)
         self.assertEqual(t["percent"], 60)
-        self.assertRegex(t["progress"], r"^halfway — Bob \(\d{2}/\d{2}/\d{4} \d{2}:\d{2}\)$")  # signed on save
+        self.assertRegex(t["progress"], r"^\[\d{2}/\d{2}/\d{4} \d{2}:\d{2} Bob\] halfway$")  # signed on save
         self.assertFalse(t["changePending"])
 
         # details + new target in one save: details apply now, target waits
@@ -347,7 +347,7 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual((s, r["pending"]), (200, ["actual_date"]))
         t = self._task(M, tid)
         self.assertIsNone(t["actualDate"])
-        self.assertRegex(t["progress"], r"^done last week — Bob \(\d{2}/\d{2}/\d{4} \d{2}:\d{2}\)$")
+        self.assertRegex(t["progress"], r"^\[\d{2}/\d{2}/\d{4} \d{2}:\d{2} Bob\] done last week$")
         self.assertEqual(t["pendingFields"], ["actual_date"])
         rq = next(x for x in L.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == tid)
         self.assertEqual(rq["changes"], [["actual_date", None, last_week]])

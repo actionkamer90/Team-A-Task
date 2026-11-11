@@ -1204,9 +1204,9 @@ def proposal_fields(t, proposal):
     return out
 
 
-# ---- signed progress notes: every new or changed line ends with " — Name (dd/mm/yyyy hh:mm)"
-SIGN_END_RE = re.compile(r"\s+— [^()\n]{1,60} \(\d{2}/\d{2}/\d{4} \d{2}:\d{2}\)$")
-SIGN_START_RE = re.compile(r"^\[(\d{2}/\d{2}/\d{4} \d{2}:\d{2}) ([^\]]{1,60})\] ")  # earlier format, converted on save
+# ---- signed progress notes: every new or changed line starts with "[dd/mm/yyyy hh:mm Name] "
+SIGN_START_RE = re.compile(r"^\[(\d{2}/\d{2}/\d{4} \d{2}:\d{2}) ([^\]]{1,60})\] ")
+SIGN_END_RE = re.compile(r"\s+— ([^()\n]{1,60}) \((\d{2}/\d{2}/\d{4} \d{2}:\d{2})\)$")  # end-of-line format used briefly; converted on save
 PROGRESS_MAX = 12000
 
 
@@ -1216,10 +1216,10 @@ def signer_name(h, tid):
 
 
 def sign_progress(old, new, name, when=None):
-    """Sign the lines of `new` that aren't in `old` (added or edited) as "text — Name (dd/mm/yyyy hh:mm)".
+    """Sign the lines of `new` that aren't in `old` (added or edited) as "[dd/mm/yyyy hh:mm Name] text".
     Unchanged lines keep their signature. A new or edited line gets the current person's signature,
     replacing any signature typed or copied into it, so nobody can sign a line in someone else's name."""
-    sig = " — %s (%s)" % (re.sub(r"[()\n]", "", name).strip()[:60] or "Someone", (when or dt.datetime.now()).strftime("%d/%m/%Y %H:%M"))
+    sig = "[%s %s] " % ((when or dt.datetime.now()).strftime("%d/%m/%Y %H:%M"), re.sub(r"[\[\]\n]", "", name).strip()[:60] or "Someone")
     left = {}
     for line in (old or "").split("\n"):
         left[line.strip()] = left.get(line.strip(), 0) + 1
@@ -1231,11 +1231,11 @@ def sign_progress(old, new, name, when=None):
             continue
         if left.get(key):
             left[key] -= 1
-            m = SIGN_START_RE.match(key)  # unchanged line in the earlier "[date Name] text" format: same signature, new layout
-            out.append("%s — %s (%s)" % (key[m.end():], m.group(2), m.group(1)) if m else line)
+            m = SIGN_END_RE.search(key)  # unchanged line in the end-of-line format: same signature, start-of-line layout
+            out.append("[%s %s] %s" % (m.group(2), m.group(1), key[:m.start()]) if m else line)
             continue
         text = SIGN_END_RE.sub("", SIGN_START_RE.sub("", key)).strip()
-        out.append(text + sig if text else line)
+        out.append(sig + text if text else line)
     signed = "\n".join(out)
     if len(signed) > PROGRESS_MAX:
         raise bad("The progress notes are too long. Remove some older lines and save again.")

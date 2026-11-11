@@ -11,7 +11,7 @@ import test_api  # noqa: E402  (starts the test server and sets TT_DB)
 import server  # noqa: E402
 
 W = dt.datetime(2026, 11, 10, 19, 22)
-SIG = r" — %s \(\d{2}/\d{2}/\d{4} \d{2}:\d{2}\)$"
+SIG = r"^\[\d{2}/\d{2}/\d{4} \d{2}:\d{2} %s\] "
 
 
 def task_body(t, **kw):
@@ -40,30 +40,32 @@ class SignTests(unittest.TestCase):
         return r["id"]
 
     def test_signature_format(self):
-        old = "Preparing Report\n[11/11/2026 02:09 Izuan] Zenith log collected"
-        new = "khaidir to add comment\nPreparing Report\n[11/11/2026 02:09 Izuan] Zenith log collected\nfake — Izuan (01/01/2026 09:00)"
+        old = "Preparing Report\n[11/11/2026 02:09 Izuan] Zenith log collected\nVendor replied — Ena (10/11/2026 18:00)"
+        new = ("khaidir to add comment\nPreparing Report\n[11/11/2026 02:09 Izuan] Zenith log collected\n"
+               "Vendor replied — Ena (10/11/2026 18:00)\n[01/01/2026 09:00 Izuan] fake")
         self.assertEqual(server.sign_progress(old, new, "Khaidir", W).split("\n"), [
-            "khaidir to add comment — Khaidir (10/11/2026 19:22)",   # new line signed at the end
-            "Preparing Report",                                       # untouched line stays as it was
-            "Zenith log collected — Izuan (11/11/2026 02:09)",        # earlier format: same signature, new layout
-            "fake — Khaidir (10/11/2026 19:22)",                      # a typed signature is replaced by the real author
+            "[10/11/2026 19:22 Khaidir] khaidir to add comment",   # new line signed at the start
+            "Preparing Report",                                     # untouched line stays as it was
+            "[11/11/2026 02:09 Izuan] Zenith log collected",        # untouched signed line stays as it was
+            "[10/11/2026 18:00 Ena] Vendor replied",                # end-of-line format: same signature, start-of-line layout
+            "[10/11/2026 19:22 Khaidir] fake",                      # a typed signature is replaced by the real author
         ])
         once = server.sign_progress("", "x", "Izuan", W)
         self.assertEqual(server.sign_progress(once, once, "Ena", W), once)  # saving again changes nothing
         # editing someone else's signed line re-signs it with the editor
-        self.assertEqual(server.sign_progress(once, "x and more — Izuan (11/11/2026 10:00)", "Ena", W), "x and more — Ena (10/11/2026 19:22)")
+        self.assertEqual(server.sign_progress(once, "[11/11/2026 10:00 Izuan] x and more", "Ena", W), "[10/11/2026 19:22 Ena] x and more")
 
     def test_signed_through_the_api(self):
         tid = self.new_task()
         t = self.task(self.M, tid)
         self.assertEqual(self.M.req("PUT", "/api/tasks/%d" % tid, task_body(t, progress="Called the customer"))[0], 200)
         first = self.task(self.M, tid)["progress"]
-        self.assertRegex(first, r"^Called the customer" + SIG % "Bob")
+        self.assertRegex(first, SIG % "Bob" + "Called the customer$")
         t = self.task(self.L, tid)
         self.assertEqual(self.L.req("PUT", "/api/tasks/%d" % tid, task_body(t, progress=first + "\nLead note"))[0], 200)
         lines = self.task(self.L, tid)["progress"].split("\n")
         self.assertEqual(lines[0], first)
-        self.assertRegex(lines[1], r"^Lead note" + SIG % "Alice")
+        self.assertRegex(lines[1], SIG % "Alice" + "Lead note$")
 
     def test_archived_task_lead_only(self):
         t = next(x for x in self.M.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if x["no"] == 3)  # Bob leads it; completed in March
