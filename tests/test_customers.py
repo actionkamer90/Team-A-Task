@@ -76,6 +76,21 @@ class CustomerAndKpiTests(unittest.TestCase):
         names = [c["name"] for c in self.admin.req("GET", "/api/admin/customers")[1]["customers"]]
         self.assertNotIn("Logo Co", names)
 
+    def test_old_approval_history_is_folded(self):
+        con = server.connect()
+        t = con.execute("SELECT id FROM tasks WHERE team_id='kpi-check' AND no=1").fetchone()["id"]
+        approver = server.connect().execute("SELECT id FROM users WHERE login='admin'").fetchone()["id"]
+        member = server.connect().execute("SELECT id FROM users WHERE login='bob'").fetchone()["id"]
+        with server.Tx(con):
+            at = "2026-11-11T02:03:00+00:00"
+            con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,?,?,?)", (t, at, approver, "target", '{"from": "2026-09-20", "to": "2026-11-13"}'))
+            con.execute("INSERT INTO task_log(task_id,at,user_id,kind,changes) VALUES(?,?,?,?,?)", (t, at, approver, "approve", '{"request": "edit", "of": %d}' % member))
+        hist = self.admin.req("GET", "/api/tasks/%d/history" % t)[1]["entries"]
+        ap = next(e for e in hist if e["kind"] == "approve" and e["at"] == at)
+        self.assertEqual(ap["changes"]["of"], "Bob")
+        self.assertEqual(ap["changes"]["applied"], [["target", "2026-09-20", "2026-11-13"]])
+        self.assertFalse(any(e["kind"] == "target" and e["at"] == at for e in hist))  # folded into the approval
+
 
 if __name__ == "__main__":
     unittest.main()

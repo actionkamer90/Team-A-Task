@@ -1185,10 +1185,21 @@ def write_fields(h, task_id, d, user_id):
     h.con.execute("UPDATE tasks SET %s, updated_by=?, updated_at=? WHERE id=?" % sets, vals + [user_id, now_iso(), task_id])
 
 
-def set_target(h, t, new):
+def set_target(h, t, new, write_log=True):
     h.con.execute("UPDATE tasks SET target=?, requested_target=COALESCE(requested_target, ?), target_set_by=?, target_set_at=?, updated_at=? WHERE id=?",
                   (new, new, h.user["id"], now_iso(), now_iso(), t["id"]))
-    log(h, t["id"], "target", {"from": t["target"], "to": new})
+    if write_log:
+        log(h, t["id"], "target", {"from": t["target"], "to": new})
+
+
+def proposal_fields(t, proposal):
+    """[field, current, proposed] for a member's request, as shown in the task history."""
+    out = []
+    if proposal.get("target"):
+        out.append(["target", t["target"] or t["requested_target"], proposal["target"]])
+    if proposal.get("actual_date"):
+        out.append(["actual_date", t["actual_date"], proposal["actual_date"]])
+    return out
 
 
 @route("POST", "/api/teams/([a-z0-9-]+)/tasks")
@@ -1300,6 +1311,7 @@ def request_change(h, t, proposal):
     if other and other["by_user"] != h.user["id"]:
         raise ApiError(409, "%s already has a request waiting for the team lead on this task. Ask your team lead to review it first."
                        % (other["display_name"] or "Someone"))
+    log(h, t["id"], "request", {"fields": proposal_fields(t, proposal)})
     if other:
         data = dict(json.loads(other["data"]), **proposal)
         h.con.execute("UPDATE change_requests SET data=?, at=? WHERE id=?", (json.dumps(data), now_iso(), other["id"]))
@@ -1349,9 +1361,29 @@ def api_task_history(h, task_id):
     rows = h.con.execute("SELECT l.*, u.display_name FROM task_log l LEFT JOIN users u ON u.id=l.user_id WHERE task_id=? ORDER BY l.id DESC",
                          (t["id"],)).fetchall()
     names = {r["id"]: r["display_name"] for r in h.con.execute("SELECT id, display_name FROM users")}
+    rows = [dict(r, changes=json.loads(r["changes"])) for r in rows]
+    # Entries written before approvals were logged as one entry: the lead's approval came with a separate
+    # "target" entry in the lead's name (and a backdated completion in the member's name) at the same moment.
+    # Fold those into the approval so the history says whose request it was.
+    folded = set()
+    for a in rows:
+        if a["kind"] != "approve" or "applied" in a["changes"]:
+            continue
+        a["changes"]["applied"] = []
+        for o in rows:
+            if o["id"] in folded or o["at"] != a["at"] or o["id"] == a["id"]:
+                continue
+            if o["kind"] == "target" and o["user_id"] == a["user_id"]:
+                a["changes"]["applied"].append(["target", o["changes"].get("from"), o["changes"].get("to")])
+                folded.add(o["id"])
+            elif o["kind"] == "edit" and o["user_id"] == a["changes"].get("of") and o["user_id"] != a["user_id"]:
+                a["changes"]["applied"] += o["changes"]
+                folded.add(o["id"])
     entries = []
     for r in rows:
-        ch = json.loads(r["changes"])
+        if r["id"] in folded:
+            continue
+        ch = r["changes"]
         if isinstance(ch, dict) and "of" in ch:
             ch["of"] = names.get(ch["of"], "Someone")
         entries.append({"at": r["at"], "by": r["display_name"] or ("Excel workbook" if r["user_id"] is None else "Someone"), "kind": r["kind"], "changes": ch})
@@ -1412,22 +1444,22 @@ def api_request_approve(h, rid):
         t = get_task(h, r["task_id"])
         if r["kind"] == "create":
             h.con.execute("UPDATE tasks SET approved=1, updated_at=? WHERE id=?", (now_iso(), t["id"]))
-            log(h, t["id"], "approve", {"request": "create", "of": r["by_user"]})
-            if t["requested_target"] and not t["target"]:
-                set_target(h, t, t["requested_target"])
             applied = []
+            if t["requested_target"] and not t["target"]:
+                set_target(h, t, t["requested_target"], write_log=False)
+                applied.append(["target", None, t["requested_target"]])
+            log(h, t["id"], "approve", {"request": "create", "of": r["by_user"], "applied": applied})
         elif set(json.loads(r["data"])) <= {"target", "actual_date"}:
             data = json.loads(r["data"])
             applied = []
             if data.get("actual_date") and data["actual_date"] != t["actual_date"]:
                 ch = [["actual_date", t["actual_date"], data["actual_date"]]] + ([["percent", t["percent"], 100]] if t["percent"] != 100 else [])
                 write_fields(h, t["id"], {"actual_date": data["actual_date"], "percent": 100}, r["by_user"])
-                log(h, t["id"], "edit", ch, user_id=r["by_user"])
                 applied += ch
             if data.get("target") and data["target"] != t["target"]:
-                set_target(h, t, data["target"])
+                set_target(h, t, data["target"], write_log=False)
                 applied.append(["target", t["target"], data["target"]])
-            log(h, t["id"], "approve", {"request": "edit", "of": r["by_user"]})
+            log(h, t["id"], "approve", {"request": "edit", "of": r["by_user"], "applied": applied})
             h.con.execute("UPDATE change_requests SET data=? WHERE id=?", (json.dumps(dict(data, _applied=applied)), r["id"]))
         else:  # older requests that carried a whole task
             data = json.loads(r["data"])
@@ -1436,10 +1468,9 @@ def api_request_approve(h, rid):
             field_changes = [c for c in applied if c[0] != "target"]
             if field_changes:
                 write_fields(h, t["id"], data, r["by_user"])
-                log(h, t["id"], "edit", field_changes, user_id=r["by_user"])
             if target and target != t["target"]:
-                set_target(h, t, target)
-            log(h, t["id"], "approve", {"request": "edit", "of": r["by_user"]})
+                set_target(h, t, target, write_log=False)
+            log(h, t["id"], "approve", {"request": "edit", "of": r["by_user"], "applied": applied})
             h.con.execute("UPDATE change_requests SET data=? WHERE id=?", (json.dumps(dict(json.loads(r["data"]), _applied=applied)), r["id"]))
         h.con.execute("UPDATE change_requests SET status='approved', decided_by=?, decided_at=? WHERE id=?", (h.user["id"], now_iso(), r["id"]))
     return {"ok": True}
@@ -1454,7 +1485,7 @@ def api_request_reject(h, rid):
         if r["kind"] == "create":
             h.con.execute("DELETE FROM tasks WHERE id=? AND approved=0", (r["task_id"],))
         else:
-            log(h, r["task_id"], "reject", {"of": r["by_user"], "note": note})
+            log(h, r["task_id"], "reject", {"of": r["by_user"], "note": note, "fields": proposal_fields(get_task(h, r["task_id"]), json.loads(r["data"]))})
             drop_proposal(h, r)
         h.con.execute("UPDATE change_requests SET status='rejected', note=?, decided_by=?, decided_at=? WHERE id=?",
                       (note, h.user["id"], now_iso(), r["id"]))
@@ -1472,6 +1503,7 @@ def api_request_cancel(h, rid):
         if r["kind"] == "create":
             h.con.execute("DELETE FROM tasks WHERE id=? AND approved=0", (r["task_id"],))
         else:
+            log(h, r["task_id"], "withdraw", {"fields": proposal_fields(get_task(h, r["task_id"]), json.loads(r["data"]))})
             drop_proposal(h, r)
         h.con.execute("UPDATE change_requests SET status='cancelled', decided_by=?, decided_at=? WHERE id=?", (h.user["id"], now_iso(), r["id"]))
     return {"ok": True}

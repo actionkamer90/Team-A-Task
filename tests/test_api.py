@@ -300,8 +300,11 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(self._task(M, tid)["target"], "2026-12-22")
         hist = M.req("GET", "/api/tasks/%d/history" % tid)[1]["entries"]
         self.assertTrue(any(e["kind"] == "edit" and e["by"] == "Bob" for e in hist))
-        self.assertTrue(any(e["kind"] == "target" and e["by"] == "Alice" for e in hist))
-        self.assertTrue(any(e["kind"] == "approve" and e["changes"]["of"] == "Bob" for e in hist))
+        # Bob's request is in his name, and Alice's approval says it was Bob's date, not her own change
+        self.assertTrue(any(e["kind"] == "request" and e["by"] == "Bob" and e["changes"]["fields"] == [["target", "2026-12-15", "2026-12-22"]] for e in hist))
+        self.assertTrue(any(e["kind"] == "approve" and e["by"] == "Alice" and e["changes"]["of"] == "Bob"
+                            and ["target", "2026-12-15", "2026-12-22"] in e["changes"]["applied"] for e in hist))
+        self.assertFalse(any(e["kind"] == "target" and e["by"] == "Alice" for e in hist))
 
         # rejection keeps the official date and tells the member why
         M.req("PUT", "/api/tasks/%d" % tid, dict(self._body(self._task(M, tid)), target="2027-01-31"))

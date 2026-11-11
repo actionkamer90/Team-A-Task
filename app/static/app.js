@@ -543,9 +543,13 @@ async function loadHistory(t, box) {
     if (!r.entries.length) box.append(h("span", { text: r.imported ? "Imported from the Excel workbook. No changes since." : "No changes yet." }));
     r.entries.forEach(e => {
       let lines;
+      const asked = f => (f || []).map(([k, a, b]) => h("div", { class: "sub", text: (LOG_LABEL[k] || k) + ": " + describe(k, a) + " → " + describe(k, b) }));
       if (e.kind === "create") lines = [h("div", { text: "Created the task" })];
-      else if (e.kind === "approve") lines = [h("div", { class: "tgt", text: e.changes.request === "create" ? "Approved the new task from " + e.changes.of : "Approved " + e.changes.of + "'s changes" })];
-      else if (e.kind === "reject") lines = [h("div", { class: "tgt", text: "Rejected " + e.changes.of + "'s changes" + (e.changes.note ? ": " + e.changes.note : "") })];
+      else if (e.kind === "request") lines = [h("div", { class: "tgt", text: "Asked the team lead to change:" }), ...asked(e.changes.fields)];
+      else if (e.kind === "withdraw") lines = [h("div", { class: "tgt", text: "Withdrew their request:" }), ...asked(e.changes.fields)];
+      else if (e.kind === "approve") lines = [h("div", { class: "tgt", text: e.changes.request === "create" ? "Approved the new task from " + e.changes.of
+          : "Approved " + e.changes.of + "'s request" + (e.changes.applied?.length ? ":" : "") }), ...asked(e.changes.applied)];
+      else if (e.kind === "reject") lines = [h("div", { class: "tgt", text: "Rejected " + e.changes.of + "'s request" + (e.changes.note ? " (" + e.changes.note + ")" : "") + (e.changes.fields?.length ? ":" : "") }), ...asked(e.changes.fields)];
       else if (e.kind === "target") lines = [h("div", { class: "tgt", text: e.changes.from ? "Changed the official target: " + fmt(e.changes.from) + " → " + fmt(e.changes.to) : "Set the official target: " + fmt(e.changes.to) })];
       else lines = e.changes.map(([f, a, b]) => h("div", { text: f === "progress" ? "Updated the progress notes" : (LOG_LABEL[f] || f) + ": " + describe(f, a) + " → " + describe(f, b) }));
       box.append(h("div", { class: "ev" }, h("div", {}, h("b", { text: e.by }), h("span", { class: "mono", text: "  ·  " + fmtDT(e.at) })), lines));
