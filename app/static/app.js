@@ -832,6 +832,11 @@ function teamSheet(tm) {
     } }), h("button", { class: "btn", text: "Cancel", onclick: closeSheet })]);
 }
 
+// Each file picker gets an id that is never reused. (Ids built from the customer name once collided,
+// e.g. "Maybank Malaysia" and "DotDash Internal", and the upload went to the wrong customer.)
+let pickerSeq = 0;
+const pickerId = prefix => prefix + "-" + (++pickerSeq);
+
 // Customer icons in Team settings: upload a logo (shrunk to a 64 × 64 PNG in the browser) or go back to initials.
 function logoManager(tm) {
   const box = h("div", { class: "logo-mgr" });
@@ -841,14 +846,14 @@ function logoManager(tm) {
       h("p", { class: "muted small m0", text: "Each customer shows its initials until you upload a logo. PNG, JPG, GIF, WebP or SVG; it is shrunk to a small 64 × 64 icon. Save the customer list above first to add new customers here." }),
       names.length ? h("ul", { class: "logo-list" }, names.map(n => {
         const has = !!team()?.logos?.[n];
-        const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/svg+xml", class: "sr-only", id: "logo-" + custHue(n) + "-" + n.length,
+        const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/svg+xml", class: "sr-only", id: pickerId("logo"),
           onchange: async e => {
             const f = e.target.files[0]; e.target.value = ""; if (!f) return;
             try { await api("PUT", "/api/teams/" + tm.id + "/logos", { name: n, png: await toIconPng(f) }); await reloadTeam(); draw(); toast("Logo saved for " + n); }
             catch (x) { toast(x.message); }
           } });
         return h("li", {}, custIcon(n, true), h("span", { class: "nm", text: n }),
-          h("label", { class: "btn small", for: file.id }, has ? "Change logo" : "Upload logo", file),
+          h("label", { class: "btn small" }, has ? "Change logo" : "Upload logo", file),
           has ? h("button", { class: "btn small", type: "button", text: "Use initials", onclick: async () => {
             try { await api("DELETE", "/api/teams/" + tm.id + "/logos", { name: n }); await reloadTeam(); draw(); toast("Back to initials for " + n); } catch (x) { toast(x.message); }
           } }) : null);
@@ -912,7 +917,7 @@ function viewCustomers(main) {
     body.replaceChildren(h("div", { class: "tscroll" }, h("table", { class: "cust-table" },
       h("thead", {}, h("tr", {}, h("th", { text: "Customer" }), data.teams.map(t => h("th", { class: "ctr", text: t.name })), h("th", { class: "num", text: "Open tasks" }), h("th", { text: "Icon" }), h("th", {}))),
       h("tbody", {}, list.map(c => {
-        const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/svg+xml", class: "sr-only", id: "cl-" + custHue(c.name) + "-" + c.name.length + "-" + c.teams.length,
+        const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/svg+xml", class: "sr-only", id: pickerId("cl"),
           onchange: async e => { const f = e.target.files[0]; e.target.value = ""; if (!f) return;
             try { const r = await api("PUT", "/api/admin/customers/logo", { name: c.name, png: await toIconPng(f) }); toast("Logo saved for " + c.name + " in " + r.teams + (r.teams === 1 ? " team" : " teams")); await load(); await reloadTeam(); } catch (x) { toast(x.message); } } });
         const removing = confirmRemove === c.name;
@@ -923,7 +928,7 @@ function viewCustomers(main) {
               if (!teams.length) { e.target.checked = true; confirmRemove = c.name; return draw(); }
               save(c.name, teams, (e.target.checked ? "Added " + c.name + " to " : "Removed " + c.name + " from ") + t.name); } }))),
           h("td", { class: "num mono", text: c.openTasks }),
-          h("td", { class: "nowrap" }, h("label", { class: "btn small", for: file.id }, c.logo ? "Change" : "Upload", file),
+          h("td", { class: "nowrap" }, h("label", { class: "btn small" }, c.logo ? "Change" : "Upload", file),
             c.logo ? h("button", { class: "btn small", type: "button", text: "Use initials", onclick: async () => {
               try { await api("PUT", "/api/admin/customers/logo", { name: c.name, png: "" }); toast("Back to initials for " + c.name); await load(); await reloadTeam(); } catch (x) { toast(x.message); } } }) : null),
           h("td", { class: "nowrap" }, removing
