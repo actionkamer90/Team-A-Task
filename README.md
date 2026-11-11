@@ -29,6 +29,9 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Customers tab (administrators).** One list of every customer: add a customer, tick which teams work with
   it, and upload its logo once for all of those teams. Team leads can still edit their own team's list in
   *Team settings*.
+- **Support from outside the team.** Under *Support engineer* you can type the name of someone outside the
+  team. They show on the task and in exports, but not in the Engineer filter, the Summary or the KPI. A Lead
+  engineer can't also be picked as Support. The Engineer filter lists current team members only.
 - **Customer icons.** Every customer name has a small icon: a coloured badge with its initials, or a logo a
   team lead uploads in *Team settings* (stored as a 64 × 64 PNG in the database).
 - **Signed progress notes.** When someone saves a task, every new or changed line in Task progress is

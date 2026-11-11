@@ -101,6 +101,7 @@ function helpGuide(isAdmin) {
         ]),
         list([
           ["Only the task's Lead Engineers and the team lead can change it. Support engineers can view it."],
+          [B("Support engineer from outside the team: "), "type their name in the box under Support engineer and press Add (another team, a vendor, the customer). They show on the task but not in the Engineer filter or the KPI. Someone picked as Lead engineer is greyed out under Support."],
           ["Changing the target date, or entering a completed date earlier than today, sends a request to the team lead. Other changes save immediately. If the target had already passed, the team lead is warned that an earlier completed date would turn a late task into an on-time one."],
           ["Once a task is in the Archive, only the team lead can change it."],
           ["The task's ", B("History"), " lists every change: who, when, and what it was before."],

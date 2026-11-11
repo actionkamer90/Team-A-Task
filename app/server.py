@@ -374,9 +374,10 @@ def compute_kpi(team, tasks, people, frm, to):
         r["cats"] = {cat: sum(1 for t in L if t["category"] == cat) for cat in cats}
         rows.append(r)
     rows.sort(key=lambda r: (-r["E"], r["name"].lower()))
-    with_sup = [t for t in done if t["support"]]
+    team_sup = lambda t: any(not k.startswith("ext:") for k in t["support"])  # people outside the team don't count
+    with_sup = [t for t in done if team_sup(t)]
     team_row = row("Team", done, with_sup)
-    team_row["M"] = sum(1 + (1 if t["support"] else 0) for t in done if early(t))
+    team_row["M"] = sum(1 + (1 if team_sup(t) else 0) for t in done if early(t))
     team_row["N"] = team_row["M"] / team_row["E"] if team_row["E"] else 0
     team_row["O"] = c["onTime"] * team_row["L"] + c["early"] * team_row["N"] if team_row["E"] else 0
     team_row["rating"] = rating(team_row["O"], c) if team_row["E"] else "No Data"
@@ -1127,14 +1128,34 @@ TASK_FIELDS = [("category", "Category"), ("title", "Main task"), ("customer", "C
                ("actual_date", "Actual date")]
 
 
+OUTSIDE = "ext:"  # support engineers from outside the team are stored by name with this prefix
+
+
+def is_outside(k):
+    return k.startswith(OUTSIDE)
+
+
 def parse_task(h, tid, body, team):
     keys = {r["key"] for r in h.con.execute("SELECT key FROM people WHERE team_id=?", (tid,))}
 
-    def ppl(k):
+    def ppl(k, outside_ok=False):
         v = body.get(k, [])
-        if not isinstance(v, list) or not all(isinstance(x, str) and x in keys for x in v) or len(v) > 20:
+        if not isinstance(v, list) or len(v) > 20 or not all(isinstance(x, str) for x in v):
             raise bad("Pick engineers from this team's list.")
-        return sorted(set(v), key=v.index)
+        out = []
+        for x in v:
+            if outside_ok and x.startswith(OUTSIDE):
+                # someone from outside the team, typed in by name: "ext:Name"
+                name = re.sub(r"[\x00-\x1f]", "", x[len(OUTSIDE):]).strip()
+                if not name or len(name) > 60:
+                    raise bad("Names of people outside the team must be 1 to 60 characters.")
+                x = OUTSIDE + name
+            elif x not in keys:
+                raise bad("Pick engineers from this team's list." if not outside_ok else
+                          "Pick support engineers from this team's list, or type the name of someone outside the team.")
+            if x.lower() not in [o.lower() for o in out]:
+                out.append(x)
+        return out
     cat = s_field(body, "category", 60, True)
     if cat not in team["categories"]:
         raise bad("Choose one of this team's categories.")
@@ -1147,9 +1168,10 @@ def parse_task(h, tid, body, team):
         raise bad("Task percentage must be a number.")
     d = {"category": cat, "title": s_field(body, "title", 200, True), "customer": s_field(body, "customer", 100),
          "urgency": urg, "percent": max(0, min(100, pct)), "progress": s_field(body, "progress", PROGRESS_MAX),
-         "lead": ppl("lead"), "support": ppl("support"), "start_date": d_field(body, "startDate"), "actual_date": d_field(body, "actualDate")}
+         "lead": ppl("lead"), "support": ppl("support", outside_ok=True), "start_date": d_field(body, "startDate"), "actual_date": d_field(body, "actualDate")}
     if not d["lead"]:
         raise bad("Choose at least one Lead Engineer.")
+    d["support"] = [k for k in d["support"] if k not in d["lead"]]  # a lead engineer isn't also listed as support
     if d["actual_date"]:
         d["percent"] = 100
         if d["start_date"] and d["actual_date"] < d["start_date"]:
@@ -1589,7 +1611,7 @@ def api_export(h, tid):
     td = today()
     head = ["Task No", "Categories", "Main Task / Project", "Task Progress", "Task Percentage", "Urgency", "Customer", "Lead Engineer",
             "Support Engineer", "Start Date", "Target Date", "Actual Date", "Status", "Target Approved"]
-    nm = lambda a: " / ".join(names.get(k, k) for k in a)
+    nm = lambda a: " / ".join(k[len(OUTSIDE):] if is_outside(k) else names.get(k, k) for k in a)
 
     def rows(lst):
         return [head] + [[t["no"], t["category"], t["title"], t["progress"], t["percent"] / 100, t["urgency"], t["customer"], nm(t["lead"]),

@@ -280,3 +280,11 @@ img.cust-ico{background:#fff;border:1px solid var(--line)}
 .cust .cust-slot.big{width:38px}
 .nc-teams .check{padding-bottom:0;cursor:pointer}
 .hist .sub{padding-left:10px}
+/* support engineers from outside the team */
+.toggles-wrap{display:flex;flex-direction:column;gap:8px}
+.toggles button.outside{border-style:dashed;background:var(--surface-2);color:var(--fg);border-color:var(--muted)}
+.toggles button.outside[aria-pressed="true"]{background:var(--surface-2);color:var(--fg);border-color:var(--muted)}
+.toggles button.outside .x{color:var(--muted)}
+.outside-add{display:flex;gap:8px;max-width:420px}
+.outside-add input{flex:1;min-width:0}
+.toggles button.blocked{opacity:.4;text-decoration:line-through;cursor:not-allowed}

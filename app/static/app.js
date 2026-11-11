@@ -65,7 +65,9 @@ const role = () => S.team?.role || null;
 const isLead = () => role() === "lead" || role() === "admin";
 const myKey = () => S.team?.myKey || null;
 const people = () => S.team?.people || [];
-const personName = k => (people().find(p => p.key === k)?.name) || k;
+// Support engineers from outside the team are stored by name as "ext:Name"
+const isOutside = k => typeof k === "string" && k.startsWith("ext:");
+const personName = k => isOutside(k) ? k.slice(4) : (people().find(p => p.key === k)?.name) || k;
 
 /* ---------- customer icons ---------- */
 // An uploaded logo if the team has one, otherwise a coloured badge with the customer's initials.
@@ -272,7 +274,8 @@ function accountSheet() {
 
 /* ---------- tracker ---------- */
 function filterBar(statuses) {
-  const f = S.f, ppl = people().slice().sort((a, b) => a.name.localeCompare(b.name)), cats = team()?.categories || DEFAULT_CATS;
+  // Engineer filter: current team members only (no removed people, no one from outside the team)
+  const f = S.f, ppl = people().filter(p => p.active).sort((a, b) => a.name.localeCompare(b.name)), cats = team()?.categories || DEFAULT_CATS;
   const sel = (id, label, opts, key) => {
     const s = h("select", { id, onchange: e => { f[key] = e.target.value; refresh(); } }, h("option", { value: "", text: "All" }),
       opts.map(o => Array.isArray(o) ? h("option", { value: o[0], text: o[1] }) : h("option", { value: o, text: o })));
@@ -430,16 +433,58 @@ function closeSheet() {
   const s = document.querySelector(".sheet"); if (!s) return;
   document.querySelector(".scrim")?.remove(); s.remove(); document.removeEventListener("keydown", escClose); s._prev?.focus?.();
 }
-function peopleToggles(id, selected, disabled) {
+function peopleToggles(id, selected, disabled, allowOutside, onChange) {
   const set = new Set(selected || []);
   const ppl = people().filter(p => p.active || set.has(p.key)).sort((a, b) => a.name.localeCompare(b.name));
-  const wrap = h("div", { class: "toggles", id }); wrap.value = () => [...set];
+  const chips = h("div", { class: "toggles", id });
+  const wrap = allowOutside ? h("div", { class: "toggles-wrap" }, chips) : chips;
+  wrap.value = () => [...set];
+  const byKey = {};
   ppl.forEach(p => {
     const b = h("button", { type: "button", "aria-pressed": String(set.has(p.key)), text: p.name, disabled,
-      onclick: () => { set.has(p.key) ? set.delete(p.key) : set.add(p.key); b.setAttribute("aria-pressed", String(set.has(p.key))); } });
-    wrap.append(b);
+      onclick: () => { set.has(p.key) ? set.delete(p.key) : set.add(p.key); b.setAttribute("aria-pressed", String(set.has(p.key))); onChange?.([...set]); } });
+    byKey[p.key] = b;
+    chips.append(b);
   });
-  if (!ppl.length) wrap.append(h("span", { class: "muted", text: "No one on this team yet." }));
+  // Grey out people picked elsewhere (support: whoever is already a lead engineer); they're taken off this list.
+  wrap.block = keys => {
+    const blocked = new Set(keys);
+    for (const [k, b] of Object.entries(byKey)) {
+      const off = blocked.has(k);
+      if (off && set.has(k)) { set.delete(k); b.setAttribute("aria-pressed", "false"); }
+      b.disabled = disabled || off;
+      b.classList.toggle("blocked", off);
+      b.title = off ? "Already a Lead engineer on this task" : "";
+    }
+  };
+  if (!ppl.length && !allowOutside) chips.append(h("span", { class: "muted", text: "No one on this team yet." }));
+  if (!allowOutside) return wrap;
+  // people from outside the team: shown as their own chips; click one to take it off
+  const outsideChip = k => {
+    const b = h("button", { type: "button", class: "outside", "aria-pressed": "true", title: "Outside the team. Click to remove.", disabled,
+      onclick: () => { set.delete(k); b.remove(); } }, personName(k), h("span", { class: "x", "aria-hidden": "true", text: " ×" }));
+    return b;
+  };
+  [...set].filter(isOutside).forEach(k => chips.append(outsideChip(k)));
+  if (disabled) return wrap;
+  const input = h("input", { type: "text", id: id + "-outside", maxlength: "60", placeholder: "Name of someone outside the team", "aria-label": "Add someone outside the team as support engineer" });
+  const add = () => {
+    const name = input.value.trim().replace(/\s+/g, " ");
+    if (!name) return;
+    const inTeam = people().find(p => p.active && p.name.toLowerCase() === name.toLowerCase());
+    if (inTeam) {
+      input.value = "";
+      if (byKey[inTeam.key]?.classList.contains("blocked")) return toast(inTeam.name + " is already a Lead engineer on this task.");
+      if (!set.has(inTeam.key)) byKey[inTeam.key]?.click();
+      return toast(inTeam.name + " is in the team, so they were ticked above.");
+    }
+    const k = "ext:" + name;
+    if ([...set].some(x => x.toLowerCase() === k.toLowerCase())) { input.value = ""; return; }
+    set.add(k); chips.append(outsideChip(k)); input.value = ""; input.focus();
+  };
+  input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); add(); } });
+  wrap.append(h("div", { class: "outside-add" }, input, h("button", { type: "button", class: "btn small", text: "Add", onclick: add })),
+    h("small", { class: "muted", text: "For someone who isn't in this team (another team, a vendor, the customer). They don't appear in filters or the KPI." }));
   return wrap;
 }
 function taskSheet(t) {
@@ -463,7 +508,9 @@ function taskSheet(t) {
   const addNote = h("button", { type: "button", class: "btn small", disabled: locked, text: "Add update", onclick: () => {
     fProg.value = "\n" + fProg.value; fProg.focus(); fProg.setSelectionRange(0, 0);
   } });
-  const fLead = peopleToggles("t-lead", T.lead, locked), fSup = peopleToggles("t-sup", T.support, locked);
+  const fSup = peopleToggles("t-sup", (T.support || []).filter(k => !(T.lead || []).includes(k)), locked, true);
+  const fLead = peopleToggles("t-lead", T.lead, locked, false, leads => fSup.block(leads));
+  fSup.block(T.lead || []);
   const fStart = h("input", { type: "date", id: "t-start", value: T.startDate || "", disabled: locked });
   const fActual = h("input", { type: "date", id: "t-actual", value: T.actualDate || "", max: S.today, disabled: locked || (othersPending && !lead) });
   const fTarget = h("input", { type: "date", id: "t-target", value: T.effTarget || "", disabled: locked || (othersPending && !lead) });
