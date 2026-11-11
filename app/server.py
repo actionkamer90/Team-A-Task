@@ -1628,8 +1628,32 @@ def api_admin_teams(h):
         ppl = h.con.execute("SELECT name, role, user_id FROM people WHERE team_id=? AND active=1", (t["id"],)).fetchall()
         out.append({"id": t["id"], "name": t["name"], "leads": [p["name"] for p in ppl if p["role"] == "lead"],
                     "people": len(ppl), "joined": sum(1 for p in ppl if p["user_id"]),
-                    "open": h.con.execute("SELECT COUNT(*) FROM tasks WHERE team_id=? AND actual_date IS NULL", (t["id"],)).fetchone()[0]})
+                    "open": h.con.execute("SELECT COUNT(*) FROM tasks WHERE team_id=? AND actual_date IS NULL", (t["id"],)).fetchone()[0],
+                    "tasks": h.con.execute("SELECT COUNT(*) FROM tasks WHERE team_id=?", (t["id"],)).fetchone()[0]})
     return {"teams": out}
+
+
+@route("DELETE", "/api/teams/([a-z0-9-]+)")
+def api_team_delete(h, tid):
+    """Administrators only. Deletes a team with its people, tasks, history, requests and customer logos.
+    Logins stay (people may be in other teams). A full copy of the database is saved first."""
+    if not h.need_user()["is_admin"]:
+        raise FORBIDDEN
+    t = h.team(tid)
+    if s_field(h.body, "confirm", 100).lower() != t["name"].strip().lower():
+        raise bad("Type the team's name exactly to confirm: %s" % t["name"])
+    folder = os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "backups")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, "before-deleting-%s-%s.db" % (tid, dt.datetime.now().strftime("%Y%m%d-%H%M%S")))
+    dst = sqlite3.connect(path)
+    with WRITE_LOCK:
+        h.con.backup(dst)
+    dst.close()
+    with Tx(h.con):
+        counts = {k: h.con.execute("SELECT COUNT(*) FROM %s WHERE team_id=?" % k, (tid,)).fetchone()[0] for k in ("people", "tasks")}
+        h.con.execute("DELETE FROM teams WHERE id=?", (tid,))  # people, tasks, task_log, change_requests, logos, invites cascade
+    sys.stderr.write("Team '%s' (%s) deleted by %s; backup: %s\n" % (t["name"], tid, h.user["login"], path))
+    return {"ok": True, "name": t["name"], "people": counts["people"], "tasks": counts["tasks"], "backup": path}
 
 
 # ---------------------------------------------------------------- admin: administrators

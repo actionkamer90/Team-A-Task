@@ -52,7 +52,7 @@ async function api(method, path, body) {
 }
 
 const DEFAULT_CATS = ["Pre-Sales", "Project", "Tickets", "Internal"];
-const STATUS_CLASS = { "Delay": "bad", "On-Going": "info", "No Target": "warn", "Completed Early": "ok", "Completed On Time": "ok", "Completed Late": "warn", "Completed": "ok" };
+const STATUS_CLASS = { "Delay": "bad", "On-Going": "info", "No Target": "warn", "Completed Early": "early", "Completed On Time": "ok", "Completed Late": "warn", "Completed": "ok" };
 const RATING_CLASS = { "Excellent": "ok", "Good": "info", "Needs Improvement": "warn", "At Risk": "bad", "No Data": "" };
 
 /* ---------- state ---------- */
@@ -887,6 +887,29 @@ function toIconPng(file) {
   });
 }
 
+// Delete a team (administrators). The admin types the team's name to confirm; the server backs up the database first.
+function deleteTeamSheet(t, done) {
+  const fConfirm = h("input", { type: "text", id: "del-team-name", autocomplete: "off", placeholder: t.name });
+  const go = h("button", { class: "btn danger", text: "Delete team", disabled: true, onclick: async () => {
+    go.disabled = true;
+    try {
+      const r = await api("DELETE", "/api/teams/" + t.id, { confirm: fConfirm.value });
+      closeSheet(); toast("Deleted " + r.name + " (" + r.tasks + " tasks). A backup was saved first: " + r.backup);
+      await loadMe(); if (S.view !== "admin") { S.view = "admin"; render(); } else await done();
+    } catch (e) { toast(e.message); go.disabled = false; }
+  } });
+  fConfirm.addEventListener("input", () => { go.disabled = fConfirm.value.trim().toLowerCase() !== t.name.trim().toLowerCase(); });
+  openSheet("Delete " + t.name, [
+    h("div", { class: "note bad" }, h("b", { text: "This permanently deletes the team " + t.name + "." }),
+      " Its " + t.tasks + " task" + (t.tasks === 1 ? "" : "s") + " (including the Archive), their history and approval requests, its " + t.people +
+      " team member" + (t.people === 1 ? "" : "s") + ", invite links, customer list and customer logos are removed. Nobody can open it any more."),
+    h("p", { class: "m0" }, "People keep their logins and stay in any other teams they belong to. Before deleting, the tracker saves a full copy of the database in ", h("code", { text: "/data/backups" }), " on the server, so it can be restored if needed."),
+    t.open ? h("div", { class: "note warn", text: t.open + " of its tasks are still open. Export the team to Excel first if you need a record." }) : null,
+    h("label", { class: "field" }, h("span", { text: "Type the team's name to confirm: " + t.name }), fConfirm)],
+    [go, h("button", { class: "btn right", text: "Cancel", onclick: closeSheet })]);
+  setTimeout(() => fConfirm.focus(), 0);
+}
+
 /* ---------- customers (admin) ---------- */
 function viewCustomers(main) {
   const body = h("div", { class: "cust-admin" }), msg = h("p", { class: "muted m0" });
@@ -963,7 +986,8 @@ function viewAdmin(main) {
       list.replaceChildren(h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["Team", "Team leads", "People", "Joined", "Open tasks", ""].map(c => h("th", { text: c })))),
         h("tbody", {}, r.teams.map(t => h("tr", {}, h("td", { text: t.name }), h("td", { text: t.leads.join(", ") || "None yet" }), h("td", { class: "mono", text: t.people }),
           h("td", { class: "mono", text: t.joined }), h("td", { class: "mono", text: t.open }),
-          h("td", {}, h("button", { class: "btn small", text: "Open", onclick: async () => { await selectTeam(t.id); S.view = "team"; render(); } }))))))));
+          h("td", { class: "nowrap" }, h("button", { class: "btn small", text: "Open", onclick: async () => { await selectTeam(t.id); S.view = "team"; render(); } }), " ",
+            h("button", { class: "btn small danger", text: "Delete", onclick: () => deleteTeamSheet(t, load) }))))))));
       admins.replaceChildren(h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["Name", "Login", "Teams", "Access", ""].map(c => h("th", { text: c })))),
         h("tbody", {}, u.users.map(x => h("tr", {}, h("td", { text: x.name + (x.isMe ? " (you)" : "") }), h("td", { class: "mono", text: x.login }),
           h("td", { class: "small", text: x.teams.join(", ") || "—" }),

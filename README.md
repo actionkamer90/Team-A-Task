@@ -23,6 +23,9 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Multiple teams.** Each team has its own people, categories, customers and KPI settings.
 - **Daily tasks.** Status is calculated from the target and actual dates, as in the workbook:
   On-Going, Delay, No Target, Completed Early, Completed On Time, Completed Late.
+- **Delete a team (administrators).** *All Teams → Delete*, then type the team's name to confirm. Its tasks,
+  history, requests, members and customer logos are removed; logins stay. A full copy of the database is
+  saved to `/data/backups/before-deleting-<team>-<date>.db` first.
 - **Customers tab (administrators).** One list of every customer: add a customer, tick which teams work with
   it, and upload its logo once for all of those teams. Team leads can still edit their own team's list in
   *Team settings*.
