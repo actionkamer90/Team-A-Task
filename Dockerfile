@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -r
  && mkdir -p /data && chown tracker /data
 WORKDIR /app
 COPY --chown=tracker app/ /app/
+COPY --chown=tracker README.md /app/README.md
 
 USER tracker
 EXPOSE 8080

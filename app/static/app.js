@@ -106,13 +106,14 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 
 /* ---------- shell ---------- */
 const VIEWS = [["tracker", "Tracker", () => true], ["completed", "Archive", () => true], ["summary", "Summary", () => true],
-  ["approvals", "Approvals", () => isLead()], ["requests", "My Requests", () => !isLead() && !!myKey()], ["kpi", "KPI Dashboard", () => isLead()], ["team", "Team & Invites", () => isLead()], ["admin", "All Teams", () => S.me?.user?.isAdmin]];
+  ["approvals", "Approvals", () => isLead()], ["requests", "My Requests", () => !isLead() && !!myKey()], ["kpi", "KPI Dashboard", () => isLead()], ["team", "Team & Invites", () => isLead()], ["admin", "All Teams", () => S.me?.user?.isAdmin], ["help", "Help", () => true]];
 let refreshFn = null;
 function refresh() { if (refreshFn) refreshFn(); }
 function render() {
   const app = document.getElementById("app"); app.replaceChildren(); refreshFn = null;
   if (S.phase === "loading") return app.append(h("div", { class: "center" }, h("p", { class: "muted", text: "Loading the tracker…" })));
   if (S.phase === "error") return app.append(card("The tracker isn't responding", [h("p", { text: S.error }), h("button", { class: "btn primary", text: "Try again", onclick: () => { S.phase = "loading"; render(); loadMe(); } })]));
+  if (S.phase === "login" && S.publicHelp) { const m = h("main", { class: "wrap" }); app.append(m); helpView(m, true); return; }
   if (S.phase === "login") return app.append(loginScreen());
   if (S.phase === "invite") return app.append(inviteScreen());
   if (S.phase === "noteam" && S.me?.user?.isAdmin) return app.append(card("Create your first team", [
@@ -140,7 +141,7 @@ function render() {
       onclick: () => { S.view = id; store.set("tt.view", id); render(); }
     })))));
   const main = h("main", { class: "wrap" }); app.append(main);
-  ({ tracker: viewTracker, completed: viewCompleted, approvals: viewApprovals, requests: viewRequests, summary: viewSummary, kpi: viewKPI, team: viewTeam, admin: viewAdmin })[S.view](main);
+  ({ tracker: viewTracker, completed: viewCompleted, approvals: viewApprovals, requests: viewRequests, summary: viewSummary, kpi: viewKPI, team: viewTeam, admin: viewAdmin, help: m => helpView(m, false) })[S.view](main);
   refresh();
 }
 function card(title, body) { return h("div", { class: "center" }, h("div", { class: "card" }, h("h2", { text: title }), body)); }
@@ -159,7 +160,8 @@ function loginScreen() {
     }
   }, h("label", { class: "field" }, h("span", { text: "Login" }), fLogin), h("label", { class: "field" }, h("span", { text: "Password" }), fPw), err, btn);
   const body = [h("p", { class: "muted m0", text: "Log in with the account you created from your invite link." }), form,
-    h("p", { class: "muted small m0", text: "Forgot your password? Ask your team lead for a password reset link." })];
+    h("p", { class: "muted small m0", text: "Forgot your password? Ask your team lead for a password reset link." }),
+    h("p", { class: "small m0" }, h("button", { type: "button", class: "linkbtn", text: "Read the user guide", onclick: () => { S.publicHelp = true; render(); } }))];
   if (S.setupNeeded) body.unshift(h("div", { class: "note warn" }, "No administrator account exists yet. On the server, run ",
     h("code", { text: "docker compose exec app python server.py admin-link" }), " and open the link it prints."));
   setTimeout(() => fLogin.focus(), 0);

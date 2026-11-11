@@ -400,7 +400,8 @@ FORBIDDEN = ApiError(403, "You don't have permission to do that.")
 NOT_FOUND = ApiError(404, "Not found.")
 
 STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-                "/app.css": ("app.css", "text/css; charset=utf-8"), "/favicon.svg": ("favicon.svg", "image/svg+xml")}
+                "/app.css": ("app.css", "text/css; charset=utf-8"), "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+                "/help.js": ("help.js", "text/javascript; charset=utf-8")}
 SEC_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
                                "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
@@ -622,6 +623,24 @@ def pw_field(body):
 
 
 # ---------------------------------------------------------------- routes: auth & invites
+def _readme_path():
+    # In the container the README is copied next to server.py; in a checkout it is one folder up.
+    for p in (os.path.join(HERE, "README.md"), os.path.join(HERE, "..", "README.md")):
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+@route("GET", "/api/help/readme")
+def api_help_readme(h):
+    # The setup guide is public (the repository is public), so no login is needed: the Help link works from the log-in page.
+    p = _readme_path()
+    if not p:
+        raise NOT_FOUND
+    with open(p, encoding="utf-8") as f:
+        return {"markdown": f.read()}
+
+
 @route("GET", "/api/me")
 def api_me(h):
     if not h.user:

@@ -23,6 +23,8 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Multiple teams.** Each team has its own people, categories, customers and KPI settings.
 - **Daily tasks.** Status is calculated from the target and actual dates, as in the workbook:
   On-Going, Delay, No Target, Completed Early, Completed On Time, Completed Late.
+- **Help tab.** A user guide for every role, a diagram of the data model, and this README as the setup guide.
+  The guide is also linked from the log-in page.
 - **Sorting.** On the Tracker and Archive, click any column header to sort by it (click again to
   reverse), or use the *Sort by* menu, which also works on phones. Each tab remembers its own sort.
 - **Archive.** Tasks move to the Archive 2 days after their actual date (the old
@@ -112,12 +114,25 @@ since the last import, so stop syncing once the team works in the tracker.
 
 ## Update to a new version
 
+With Docker:
+
 ```bash
 git pull
 docker compose up -d --build
 ```
 
-Data lives in the Docker volume `tracker-data` and survives updates and rebuilds.
+With Podman (AlmaLinux, as on ddtaskserver), from the repository folder:
+
+```bash
+podman exec team-task-tracker python server.py backup /data/backup.db
+mkdir -p backups && podman cp team-task-tracker:/data/backup.db ./backups/tracker-$(date +%F).db
+git pull
+podman build --format docker -t localhost/team-task-tracker:latest .
+systemctl restart team-task-tracker
+```
+
+Data lives in the volume `tracker-data` and survives updates and rebuilds. Browser tabs that were
+already open show a bar asking people to reload.
 
 ## Everyday admin
 
