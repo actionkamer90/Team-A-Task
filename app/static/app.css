@@ -348,3 +348,9 @@ tr.pj-ready td{box-shadow:inset 0 0 0 9999px rgba(46,160,90,.08)}
 .pj-edit-table td:nth-child(7) input[type=text]{min-width:170px}
 .pj-hol-list .row{flex-wrap:nowrap;max-width:560px}
 .pj-hol-list input[type=date]{width:160px;flex:none}
+
+/* Archive pages */
+.pager{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-top:12px}
+.pager-btns{gap:4px;flex-wrap:wrap}
+.pager-btns .btn{min-width:34px}
+.pager select{width:auto}

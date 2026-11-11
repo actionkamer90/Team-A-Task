@@ -113,7 +113,9 @@ function helpGuide(isAdmin) {
           [B("My Requests "), "(members): the requests you sent in the last 30 days and what the lead decided."],
         ])),
       sec("archive", "Archive",
-        P("Finished tasks appear here a set number of days after their actual date: 2 unless your team lead changes it in Team & Invites → Team settings (0 to 90 days; 0 means as soon as the task is completed). Search, filter and sort work the same as on the Tracker; by default the most recently completed tasks come first. Open a task to read its history.")),
+        P("Finished tasks appear here a set number of days after their actual date: 2 unless your team lead changes it in Team & Invites → Team settings (0 to 90 days; 0 means as soon as the task is completed). Search, filter and sort work the same as on the Tracker; by default the most recently completed tasks come first. Open a task to read its history."),
+        P(B("Completed: "), "show only tasks completed in a period: this week or last week (Monday to Sunday), this month, last month, the last 3 months, this year, last year, or your own dates with Custom dates. The count at the top shows how many tasks match."),
+        P(B("Pages: "), "the Archive shows 50 tasks a page. Use the page numbers, Previous and Next under the table, or choose 25 or 100 per page. Changing a filter or the sort goes back to page 1. Export to Excel still downloads the whole Archive.")),
       sec("projects", "Projects",
         P("A project groups the work for one client: its phases (for example Requirement Study, SIT, UAT, Production Preparation, Go-Live), the activities and milestones (◆) in each phase, who owns them and their status. The team lead or the project's Project Manager registers it and keeps the plan up to date."),
         list([

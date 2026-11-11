@@ -413,15 +413,74 @@ function viewTracker(main) {
     body.replaceChildren(sortControls("tracker"), taskTable(list, false)); afterSortRender();
   };
 }
+/* Archive: a period filter on the completed (actual) date, and pages */
+const ARCH_PERIODS = [["", "All time"], ["thisweek", "This week"], ["lastweek", "Last week"], ["thismonth", "This month"], ["lastmonth", "Last month"],
+  ["last3", "Last 3 months"], ["thisyear", "This year"], ["lastyear", "Last year"], ["custom", "Custom dates…"]];
+const ARCH_SIZES = [25, 50, 100];
+function isoLocal(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function periodRange(p, from, to) {
+  // [from, to] as YYYY-MM-DD, both included; weeks start on Monday
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth();
+  const monday = new Date(y, m, now.getDate() - (now.getDay() + 6) % 7);
+  const add = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+  switch (p) {
+    case "thisweek": return [isoLocal(monday), isoLocal(add(monday, 6))];
+    case "lastweek": return [isoLocal(add(monday, -7)), isoLocal(add(monday, -1))];
+    case "thismonth": return [isoLocal(new Date(y, m, 1)), isoLocal(new Date(y, m + 1, 0))];
+    case "lastmonth": return [isoLocal(new Date(y, m - 1, 1)), isoLocal(new Date(y, m, 0))];
+    case "last3": return [isoLocal(new Date(y, m - 3, now.getDate())), isoLocal(now)];
+    case "thisyear": return [y + "-01-01", y + "-12-31"];
+    case "lastyear": return [(y - 1) + "-01-01", (y - 1) + "-12-31"];
+    case "custom": return [from || "", to || ""];
+    default: return ["", ""];
+  }
+}
 function viewCompleted(main) {
+  const A = S.arch || (S.arch = { period: store.get("tt.arch.period") || "", from: "", to: "", page: 1, size: Number(store.get("tt.arch.size")) || 50, key: "" });
   const body = h("div"), count = h("span", { class: "muted" });
+  const fFrom = h("input", { type: "date", id: "f-arch-from", value: A.from, onchange: e => { A.from = e.target.value; refresh(); } });
+  const fTo = h("input", { type: "date", id: "f-arch-to", value: A.to, onchange: e => { A.to = e.target.value; refresh(); } });
+  const custom = [h("label", { class: "field" }, h("span", { text: "From" }), fFrom), h("label", { class: "field" }, h("span", { text: "To" }), fTo)];
+  const showCustom = () => custom.forEach(c => { c.hidden = A.period !== "custom"; });
+  const fPeriod = h("select", { id: "f-arch-period", onchange: e => { A.period = e.target.value; store.set("tt.arch.period", A.period); showCustom(); refresh(); } },
+    ARCH_PERIODS.map(([v, t]) => h("option", { value: v, text: t })));
+  fPeriod.value = A.period; showCustom();
+  const bar = filterBar(["Completed Early", "Completed On Time", "Completed Late", "Completed"]);
+  bar.prepend(h("label", { class: "field" }, h("span", { text: "Completed" }), fPeriod), ...custom);
   main.append(h("div", { class: "row between" }, h("h2", { text: team().name + " · archive" }), h("div", { class: "row" }, count, exportBtn())),
-    h("p", { class: "muted m0", text: archiveRuleText() + (isLead() ? " Change this in Team & Invites → Team settings." : "") }),
-    filterBar(["Completed Early", "Completed On Time", "Completed Late", "Completed"]), body);
+    h("p", { class: "muted m0", text: archiveRuleText() + (isLead() ? " Change this in Team & Invites → Team settings." : "") }), bar, body);
   refreshFn = () => {
-    const list = sortTasks(applyFilters(S.tasks.filter(t => t.archived)), "completed");
-    count.textContent = list.length + " tasks"; body.replaceChildren(sortControls("completed"), taskTable(list, true)); afterSortRender();
+    const [from, to] = periodRange(A.period, A.from, A.to);
+    const all = sortTasks(applyFilters(S.tasks.filter(t => t.archived)), "completed")
+      .filter(t => (!from || (t.actualDate || "") >= from) && (!to || (t.actualDate || "") <= to));
+    // a different filter or sort starts again from page 1
+    const key = JSON.stringify([S.f, A.period, from, to, S.sort.completed, A.size]);
+    if (key !== A.key) { A.key = key; A.page = 1; }
+    const pages = Math.max(1, Math.ceil(all.length / A.size));
+    A.page = Math.min(Math.max(1, A.page), pages);
+    const first = (A.page - 1) * A.size, list = all.slice(first, first + A.size);
+    count.textContent = all.length + " task" + (all.length === 1 ? "" : "s") + (from || to ? " completed " + (from && to ? fmt(from) + " – " + fmt(to) : from ? "from " + fmt(from) : "up to " + fmt(to)) : "");
+    body.replaceChildren(sortControls("completed"), taskTable(list, true), all.length > ARCH_SIZES[0] ? pager(A, all.length, pages) : null); afterSortRender();
   };
+}
+function pager(A, total, pages) {
+  const go = n => { A.page = n; refresh(); document.querySelector(".pager")?.scrollIntoView({ block: "nearest" }); };
+  // page numbers: first, last, and two either side of the current page
+  const nums = [];
+  for (let n = 1; n <= pages; n++) if (n === 1 || n === pages || Math.abs(n - A.page) <= 2) nums.push(n);
+  const btns = [];
+  nums.forEach((n, i) => {
+    if (i && n - nums[i - 1] > 1) btns.push(h("span", { class: "muted", text: "…" }));
+    btns.push(h("button", { class: "btn small" + (n === A.page ? " primary" : ""), "aria-current": n === A.page ? "page" : null, "aria-label": "Page " + n, text: String(n), onclick: () => go(n) }));
+  });
+  const size = h("select", { id: "f-arch-size", "aria-label": "Tasks per page", onchange: e => { A.size = Number(e.target.value); store.set("tt.arch.size", String(A.size)); refresh(); } },
+    ARCH_SIZES.map(n => h("option", { value: String(n), text: n + " per page" })));
+  size.value = String(A.size);
+  const first = (A.page - 1) * A.size + 1, last = Math.min(total, A.page * A.size);
+  return h("nav", { class: "pager", "aria-label": "Archive pages" },
+    h("span", { class: "muted small", text: "Showing " + first + "–" + last + " of " + total }),
+    h("div", { class: "row pager-btns" }, h("button", { class: "btn small", text: "‹ Previous", disabled: A.page === 1, onclick: () => go(A.page - 1) }), btns,
+      h("button", { class: "btn small", text: "Next ›", disabled: A.page === pages, onclick: () => go(A.page + 1) })), size);
 }
 
 /* ---------- side sheet ---------- */
