@@ -322,7 +322,6 @@ svg.pj-gantt{display:block;font-family:var(--f-body)}
 .pj-gantt .pj-bar-g{cursor:default}
 .pj-plan-table td,.pj-edit-table td{vertical-align:middle}
 tr.pj-phase-row td{background:var(--surface-2);font-weight:600}
-tr.pj-overdue td{background:var(--bad-soft)}
 .pj-od{margin-left:6px}
 .pj-status-sel{padding:3px 6px;border-radius:999px;font-size:12px;width:auto;min-width:118px}
 .pj-status-cell{display:flex;flex-direction:column;align-items:flex-start;gap:4px}

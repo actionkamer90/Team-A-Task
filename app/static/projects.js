@@ -261,7 +261,7 @@ function planTable(pr, setStatus) {
     return h("td", {}, bits);
   };
   pr.phases.forEach((ph, pi) => {
-    const r = (no, it, type, isPh) => h("tr", { class: (isPh ? "pj-phase-row" : "") + (it.overdue ? " pj-overdue" : "") + (!isPh && it.tasks && it.tasksDone === it.tasks && it.status !== "Completed" ? " pj-ready" : "") },
+    const r = (no, it, type, isPh) => h("tr", { class: (isPh ? "pj-phase-row" : "") + (!isPh && it.tasks && it.tasksDone === it.tasks && it.status !== "Completed" ? " pj-ready" : "") },
       h("td", { class: "mono" + (isPh ? "" : " muted"), text: no }), h("td", { text: (type === "Milestone" ? "◆ " : "") + it.name }), h("td", { class: "muted small", text: type }),
       h("td", { class: "small nowrap", text: weeksLabel(it.startDay, it.endDay) }), h("td", { class: "mono nowrap", text: fmt(it.startDate) }), h("td", { class: "mono nowrap", text: fmt(it.endDate) }),
       h("td", { class: "small", text: isPh ? it.deliverable : it.owner }),
