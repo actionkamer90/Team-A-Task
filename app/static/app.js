@@ -409,7 +409,7 @@ function viewTracker(main) {
 function viewCompleted(main) {
   const body = h("div"), count = h("span", { class: "muted" });
   main.append(h("div", { class: "row between" }, h("h2", { text: team().name + " · archive" }), h("div", { class: "row" }, count, exportBtn())),
-    h("p", { class: "muted m0", text: "Tasks move here " + (S.me.archiveDays || 2) + " days after their actual (completed) date." }),
+    h("p", { class: "muted m0", text: archiveRuleText() + (isLead() ? " Change this in Team & Invites → Team settings." : "") }),
     filterBar(["Completed Early", "Completed On Time", "Completed Late", "Completed"]), body);
   refreshFn = () => {
     const list = sortTasks(applyFilters(S.tasks.filter(t => t.archived)), "completed");
@@ -866,19 +866,32 @@ function personSheet(p) {
       h("small", { class: "muted", text: "If this person already has a tracker account for another team, enter that login so they use one account for both teams. Otherwise leave it empty and send an invite link." })) : null,
     p && !p.active ? h("div", { class: "note", text: "This person was removed. Saving adds them back to the team." }) : null], foot);
 }
+function archiveRuleText() {
+  const d = team()?.archiveDays ?? S.me.archiveDays ?? 2;
+  return d === 0 ? "Tasks move here on their actual (completed) date." : "Tasks move here " + d + " day" + (d === 1 ? "" : "s") + " after their actual (completed) date.";
+}
 function teamSheet(tm) {
   const isNew = !tm;
   const fName = h("input", { type: "text", id: "tm-name", value: tm?.name || "", maxlength: "80", placeholder: "e.g. Team Network" });
   const fCats = h("textarea", { id: "tm-cats" }); fCats.value = (tm?.categories || DEFAULT_CATS).join("\n");
   const fCust = h("textarea", { id: "tm-cust" }); fCust.value = (tm?.customers || []).join("\n");
+  const fArch = h("input", { type: "number", id: "tm-archive", min: "0", max: "90", step: "1", inputmode: "numeric",
+    value: String(tm?.archiveDays ?? tm?.archiveDaysDefault ?? 2) });
   openSheet(isNew ? "Create team" : "Team settings", [h("label", { class: "field" }, h("span", { text: "Team name" }), fName),
     h("label", { class: "field" }, h("span", { text: "Task categories (one per line)" }), fCats),
     h("label", { class: "field" }, h("span", { text: "Customers (one per line, offered as suggestions)" }), fCust),
+    isNew ? null : h("label", { class: "field" }, h("span", { text: "Move completed tasks to the Archive after (days)" }), fArch,
+      h("small", { class: "muted", text: "Counted from the actual (completed) date, 0 to 90 days. 0 moves a task to the Archive as soon as it is completed. Once archived, only the team lead can change a task. The server default is " + (tm?.archiveDaysDefault ?? 2) + "." })),
     isNew ? null : logoManager(tm)],
     [h("button", { class: "btn primary", text: isNew ? "Create team" : "Save", onclick: async () => {
       const lines = x => x.value.split("\n").map(s => s.trim()).filter(Boolean);
       try {
         const body = { name: fName.value, categories: lines(fCats), customers: lines(fCust) };
+        if (!isNew) {
+          const n = Number(fArch.value);
+          if (fArch.value.trim() === "" || !Number.isInteger(n) || n < 0 || n > 90) return toast("Archive after must be a whole number of days from 0 to 90.");
+          body.archiveDays = n;
+        }
         if (isNew) { const r = await api("POST", "/api/teams", body); closeSheet(); toast("Team created. Next, add its team lead."); await loadMe(); await selectTeam(r.id); S.view = "team"; render(); }
         else { await api("PUT", "/api/teams/" + tm.id, body); closeSheet(); toast("Saved"); await loadMe(); }
       } catch (e) { toast(e.message); }

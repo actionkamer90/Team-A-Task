@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS sessions(
   token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS teams(
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, categories TEXT NOT NULL, customers TEXT NOT NULL, kpi TEXT NOT NULL, created_at TEXT NOT NULL);
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, categories TEXT NOT NULL, customers TEXT NOT NULL, kpi TEXT NOT NULL, created_at TEXT NOT NULL,
+  archive_days INTEGER);
 CREATE TABLE IF NOT EXISTS people(
   id INTEGER PRIMARY KEY, team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE, key TEXT NOT NULL, name TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('lead','member')), user_id INTEGER REFERENCES users(id), active INTEGER NOT NULL DEFAULT 1,
@@ -147,6 +148,8 @@ def init_db():
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
     con = connect()
     con.executescript(SCHEMA)
+    if "archive_days" not in {r["name"] for r in con.execute("PRAGMA table_info(teams)")}:  # per-team archive delay
+        con.execute("ALTER TABLE teams ADD COLUMN archive_days INTEGER")
     cols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)")}
     if "approved" not in cols:  # upgrade from the first release
         con.execute("ALTER TABLE tasks ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
@@ -177,7 +180,7 @@ def import_team(con, data):
             if k not in keys:
                 raise SystemExit("Task %s names '%s', who isn't in the people list." % (r.get("no"), k))
     with Tx(con):
-        con.execute("INSERT INTO teams VALUES(?,?,?,?,?,?)", (tid, tm["name"], json.dumps(tm.get("categories") or DEFAULT_CATS),
+        con.execute("INSERT INTO teams(id,name,categories,customers,kpi,created_at) VALUES(?,?,?,?,?,?)", (tid, tm["name"], json.dumps(tm.get("categories") or DEFAULT_CATS),
                                                               json.dumps(tm.get("customers") or []), json.dumps(DEFAULT_KPI), ts))
         for p in data["people"]:
             con.execute("INSERT INTO people(team_id,key,name,role,active,created_at) VALUES(?,?,?,?,1,?)",
@@ -321,11 +324,20 @@ def status_of(t, td=None):
     return "Completed Early" if a < tg else "Completed On Time" if a == tg else "Completed Late"
 
 
+ARCHIVE_DAYS_MAX = 90
+
+
+def team_archive_days(con, tid):
+    """Days after the actual (completed) date before a task counts as archived: the team's setting, else TT_ARCHIVE_DAYS."""
+    r = con.execute("SELECT archive_days FROM teams WHERE id=?", (tid,)).fetchone()
+    return ARCHIVE_DAYS if not r or r["archive_days"] is None else r["archive_days"]
+
+
 def is_archived(t, td=None):
     if not t["actual_date"]:
         return False
     d = dt.date.fromisoformat(td or today()) - dt.date.fromisoformat(t["actual_date"])
-    return d.days >= ARCHIVE_DAYS
+    return d.days >= t.get("_archive_days", ARCHIVE_DAYS)
 
 
 def rating(score, c):
@@ -857,7 +869,8 @@ def api_team(h, tid):
     logos = {r["name"]: "/api/teams/%s/logos/%d?v=%s" % (tid, r["id"], re.sub(r"\D", "", r["updated_at"]))
              for r in h.con.execute("SELECT id, name, updated_at FROM customer_logos WHERE team_id=?", (tid,))}
     return {"id": t["id"], "name": t["name"], "categories": t["categories"], "customers": t["customers"], "kpi": dict(DEFAULT_KPI, **t["kpi"]),
-            "role": role, "myKey": me["key"] if me else None, "people": ppl, "urgencies": URGENCIES, "logos": logos}
+            "role": role, "myKey": me["key"] if me else None, "people": ppl, "urgencies": URGENCIES, "logos": logos,
+            "archiveDays": team_archive_days(h.con, tid), "archiveDaysDefault": ARCHIVE_DAYS}
 
 
 # ---- customer logos: small PNG icons shown beside customer names
@@ -924,7 +937,7 @@ def api_team_create(h):
         tid = slug(name)
         while h.con.execute("SELECT 1 FROM teams WHERE id=?", (tid,)).fetchone():
             tid += "-2"
-        h.con.execute("INSERT INTO teams VALUES(?,?,?,?,?,?)", (tid, name, json.dumps(cats), json.dumps(custs), json.dumps(DEFAULT_KPI), now_iso()))
+        h.con.execute("INSERT INTO teams(id,name,categories,customers,kpi,created_at) VALUES(?,?,?,?,?,?)", (tid, name, json.dumps(cats), json.dumps(custs), json.dumps(DEFAULT_KPI), now_iso()))
     return {"id": tid}
 
 
@@ -966,9 +979,21 @@ def api_team_update(h, tid):
             raise bad("The two weights must add up to 100%.")
         if not kpi["excellent"] > kpi["good"] > kpi["needs"]:
             raise bad("Thresholds must go Excellent > Good > Needs Improvement.")
+    days = t.get("archive_days")
+    if "archiveDays" in h.body:
+        v = h.body["archiveDays"]
+        if v is None or v == "":
+            days = None  # back to the server default
+        else:
+            try:
+                days = int(v)
+            except (TypeError, ValueError):
+                raise bad("Archive after must be a whole number of days.")
+            if not 0 <= days <= ARCHIVE_DAYS_MAX or str(v).strip() not in (str(days),):
+                raise bad("Archive after must be a whole number of days from 0 to %d." % ARCHIVE_DAYS_MAX)
     with Tx(h.con):
-        h.con.execute("UPDATE teams SET name=?, categories=?, customers=?, kpi=? WHERE id=?",
-                      (name, json.dumps(cats), json.dumps(custs), json.dumps(kpi), tid))
+        h.con.execute("UPDATE teams SET name=?, categories=?, customers=?, kpi=?, archive_days=? WHERE id=?",
+                      (name, json.dumps(cats), json.dumps(custs), json.dumps(kpi), days, tid))
     return {"ok": True}
 
 
@@ -1085,9 +1110,11 @@ def api_person_unlink(h, tid, pid):
 def load_tasks(h, tid, approved_only=False):
     out = []
     q = "SELECT * FROM tasks WHERE team_id=?" + (" AND approved=1" if approved_only else "") + " ORDER BY no"
+    days = team_archive_days(h.con, tid)
     for r in h.con.execute(q, (tid,)):
         t = dict(r)
         t["lead"], t["support"] = json.loads(t["lead"]), json.loads(t["support"])
+        t["_archive_days"] = days
         out.append(t)
     return out
 
@@ -1310,6 +1337,7 @@ def get_task(h, task_id):
         raise NOT_FOUND
     t = dict(r)
     t["lead"], t["support"] = json.loads(t["lead"]), json.loads(t["support"])
+    t["_archive_days"] = team_archive_days(h.con, t["team_id"])
     return t
 
 

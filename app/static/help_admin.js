@@ -13,7 +13,7 @@ const ERD_TABLES = [
   { n: "invites", g: "id", x: 20, y: 500, why: "One-time links: join a team, reset a password, or create the first administrator. Valid for 7 days; used_at is set once it is used.",
     f: [["token_hash", "PK", "sha-256 of link"], ["kind", "", "invite · reset · setup"], ["person_id", "FK", "→ people.id (invite)"], ["user_id", "FK", "→ users.id (reset)"], ["created_by", "user", "link creator"], ["created_at", "", ""], ["expires_at", "", ""], ["used_at", "", "empty until used"]] },
   { n: "teams", g: "team", x: 430, y: 20, why: "A team, such as Team A. Its own lists and KPI settings are stored on this row as JSON.",
-    f: [["id", "PK", "slug, e.g. team-a"], ["name", "", ""], ["categories", "JSON", "Pre-Sales, Project…"], ["customers", "JSON", "Affin, RHB…"], ["kpi", "JSON", "KPI weights"], ["created_at", "", ""]] },
+    f: [["id", "PK", "slug, e.g. team-a"], ["name", "", ""], ["categories", "JSON", "Pre-Sales, Project…"], ["customers", "JSON", "Affin, RHB…"], ["kpi", "JSON", "KPI weights"], ["created_at", "", ""], ["archive_days", "", "empty = server default"]] },
   { n: "people", g: "team", x: 430, y: 290, why: "A person's membership of one team and their role there. Can exist without a login (imported names); user_id links the login later.",
     f: [["id", "PK", ""], ["team_id", "FK", "→ teams.id"], ["key", "UQ", "unique per team"], ["name", "", ""], ["role", "", "lead · member"], ["user_id", "FK", "→ users.id, optional"], ["active", "", "0 / 1"], ["created_at", "", ""]] },
   { n: "customer_logos", g: "team", x: 430, y: 560, why: "Optional logo for a customer, shown as a small icon beside the customer's name. Without one, the tracker shows the customer's initials.",

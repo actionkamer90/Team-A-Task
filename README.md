@@ -46,8 +46,9 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
   **setup guide**; the server only sends those to administrators.
 - **Sorting.** On the Tracker and Archive, click any column header to sort by it (click again to
   reverse), or use the *Sort by* menu, which also works on phones. Each tab remembers its own sort.
-- **Archive.** Tasks move to the Archive 2 days after their actual date (the old
-  `ArchiveOldCompletedTasks` rule; change with `TT_ARCHIVE_DAYS`).
+- **Archive.** Tasks move to the Archive a set number of days after their actual date (the old
+  `ArchiveOldCompletedTasks` rule). Each team lead chooses the number in *Team & Invites → Team settings*
+  (0–90 days); teams that never set it use `TT_ARCHIVE_DAYS` (default 2).
 - **KPI dashboard (leads only).** KPI = On-time % × 80% + Early % × 20%. Each lead and support
   involvement counts individually. Ratings: Excellent ≥ 90%, Good ≥ 70%, Needs Improvement ≥ 60%,
   otherwise At Risk. Weights and thresholds are editable per team.

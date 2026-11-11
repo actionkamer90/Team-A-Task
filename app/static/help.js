@@ -97,7 +97,7 @@ function helpGuide(isAdmin) {
           ["Click ", B("+ New task"), ". Fill in the main task, category, urgency, customer, Lead and Support engineers, start date and target date."],
           ["Write progress in ", B("Task progress"), ", one update per line. ", B("Add update"), " starts a new line at the top. When you save, every new or changed line is signed automatically at the start, for example ", C("[11/11/2026 10:33 Khaidir] Log collected"), ". Lines you didn't touch keep their original signature."],
           ["Move the percentage as work goes on."],
-          ["When the work is done, set the ", B("Actual date"), ". The task moves to the Archive 2 days later."],
+          ["When the work is done, set the ", B("Actual date"), ". The task moves to the Archive after the number of days your team lead has set (2 unless changed)."],
         ]),
         list([
           ["Only the task's Lead Engineers and the team lead can change it. Support engineers can view it."],
@@ -112,7 +112,7 @@ function helpGuide(isAdmin) {
           [B("My Requests "), "(members): the requests you sent in the last 30 days and what the lead decided."],
         ])),
       sec("archive", "Archive",
-        P("Finished tasks appear here 2 days after their actual date. Search, filter and sort work the same as on the Tracker; by default the most recently completed tasks come first. Open a task to read its history.")),
+        P("Finished tasks appear here a set number of days after their actual date: 2 unless your team lead changes it in Team & Invites → Team settings (0 to 90 days; 0 means as soon as the task is completed). Search, filter and sort work the same as on the Tracker; by default the most recently completed tasks come first. Open a task to read its history.")),
       sec("summary", "Summary",
         P("Task load by engineer (open tasks, as lead or support) and open tasks by customer. Useful for spreading work in the morning stand-up.")),
       sec("kpi", "KPI Dashboard (team leads)",
