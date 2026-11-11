@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS teams(
 CREATE TABLE IF NOT EXISTS people(
   id INTEGER PRIMARY KEY, team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE, key TEXT NOT NULL, name TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('lead','member')), user_id INTEGER REFERENCES users(id), active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL, UNIQUE(team_id, key));
+  created_at TEXT NOT NULL, is_pm INTEGER NOT NULL DEFAULT 0, UNIQUE(team_id, key));
 CREATE TABLE IF NOT EXISTS invites(
   token_hash TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('invite','reset','setup')),
   person_id INTEGER REFERENCES people(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS tasks(
   urgency TEXT NOT NULL, customer TEXT NOT NULL DEFAULT '', lead TEXT NOT NULL DEFAULT '[]', support TEXT NOT NULL DEFAULT '[]',
   start_date TEXT, requested_target TEXT, target TEXT, target_set_by INTEGER, target_set_at TEXT, actual_date TEXT,
   created_by INTEGER, created_at TEXT NOT NULL, updated_by INTEGER, updated_at TEXT NOT NULL, imported INTEGER NOT NULL DEFAULT 0,
-  approved INTEGER NOT NULL DEFAULT 1, UNIQUE(team_id, no));
+  approved INTEGER NOT NULL DEFAULT 1, project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  project_item_id INTEGER REFERENCES project_items(id) ON DELETE SET NULL, UNIQUE(team_id, no));
 CREATE INDEX IF NOT EXISTS tasks_team ON tasks(team_id);
 CREATE TABLE IF NOT EXISTS task_log(
   id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, at TEXT NOT NULL,
@@ -99,6 +100,24 @@ CREATE TABLE IF NOT EXISTS change_requests(
   status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','cancelled')), note TEXT,
   decided_by INTEGER, decided_at TEXT);
 CREATE INDEX IF NOT EXISTS change_requests_team ON change_requests(team_id, status);
+CREATE TABLE IF NOT EXISTS clients(
+  name TEXT PRIMARY KEY COLLATE NOCASE, full_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS projects(
+  id INTEGER PRIMARY KEY, team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE, client TEXT NOT NULL DEFAULT '', name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '', pm_person_id INTEGER REFERENCES people(id) ON DELETE SET NULL, start_date TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('Planned','Active','On Hold','Completed','Cancelled')),
+  created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS projects_team ON projects(team_id);
+CREATE TABLE IF NOT EXISTS project_items(
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  parent_id INTEGER REFERENCES project_items(id) ON DELETE CASCADE, seq INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('phase','activity','milestone')), name TEXT NOT NULL, deliverable TEXT NOT NULL DEFAULT '',
+  owner TEXT NOT NULL DEFAULT '', start_day INTEGER NOT NULL, end_day INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Not Started' CHECK(status IN ('Not Started','In Progress','Completed','At Risk')), remarks TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS project_items_project ON project_items(project_id);
+CREATE TABLE IF NOT EXISTS project_holidays(
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, date TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY(project_id, date));
 CREATE TABLE IF NOT EXISTS customer_logos(
   id INTEGER PRIMARY KEY, team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE, name TEXT NOT NULL,
   png BLOB NOT NULL, updated_by INTEGER, updated_at TEXT NOT NULL, UNIQUE(team_id, name));
@@ -150,6 +169,13 @@ def init_db():
     con.executescript(SCHEMA)
     if "archive_days" not in {r["name"] for r in con.execute("PRAGMA table_info(teams)")}:  # per-team archive delay
         con.execute("ALTER TABLE teams ADD COLUMN archive_days INTEGER")
+    if "is_pm" not in {r["name"] for r in con.execute("PRAGMA table_info(people)")}:  # Project Manager role
+        con.execute("ALTER TABLE people ADD COLUMN is_pm INTEGER NOT NULL DEFAULT 0")
+    task_cols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)")}
+    if "project_id" not in task_cols:  # daily tasks can name a project and one of its activities
+        con.execute("ALTER TABLE tasks ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
+    if "project_item_id" not in task_cols:
+        con.execute("ALTER TABLE tasks ADD COLUMN project_item_id INTEGER REFERENCES project_items(id) ON DELETE SET NULL")
     cols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)")}
     if "approved" not in cols:  # upgrade from the first release
         con.execute("ALTER TABLE tasks ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
@@ -420,7 +446,7 @@ NOT_FOUND = ApiError(404, "Not found.")
 
 STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                 "/app.css": ("app.css", "text/css; charset=utf-8"), "/favicon.svg": ("favicon.svg", "image/svg+xml"),
-                "/help.js": ("help.js", "text/javascript; charset=utf-8")}
+                "/help.js": ("help.js", "text/javascript; charset=utf-8"), "/projects.js": ("projects.js", "text/javascript; charset=utf-8")}
 SEC_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
                                "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
@@ -842,7 +868,8 @@ def make_link(h, kind, person_id=None, user_id=None, created_by=None):
 # ---------------------------------------------------------------- routes: teams & people
 def person_out(r, invites):
     inv = invites.get(r["id"])
-    return {"id": r["id"], "key": r["key"], "name": r["name"], "role": r["role"], "active": bool(r["active"]),
+    pm = "is_pm" in r.keys() and r["is_pm"] and r["role"] == "member"
+    return {"id": r["id"], "key": r["key"], "name": r["name"], "role": "pm" if pm else r["role"], "active": bool(r["active"]),
             "joined": r["user_id"] is not None, "login": r["login"], "inviteExpires": inv}
 
 
@@ -870,7 +897,8 @@ def api_team(h, tid):
              for r in h.con.execute("SELECT id, name, updated_at FROM customer_logos WHERE team_id=?", (tid,))}
     return {"id": t["id"], "name": t["name"], "categories": t["categories"], "customers": t["customers"], "kpi": dict(DEFAULT_KPI, **t["kpi"]),
             "role": role, "myKey": me["key"] if me else None, "people": ppl, "urgencies": URGENCIES, "logos": logos,
-            "archiveDays": team_archive_days(h.con, tid), "archiveDaysDefault": ARCHIVE_DAYS}
+            "archiveDays": team_archive_days(h.con, tid), "archiveDaysDefault": ARCHIVE_DAYS,
+            "isPm": bool(me and me.get("is_pm")) if isinstance(me, dict) else False, "canCreateProjects": can_create_projects(h, tid)}
 
 
 # ---- customer logos: small PNG icons shown beside customer names
@@ -1011,8 +1039,10 @@ def api_person_add(h, tid):
     h.need_lead(tid)
     name = s_field(h.body, "name", 60, True)
     role = h.body.get("role", "member")
-    if role not in ("lead", "member"):
-        raise bad("Role must be lead or member.")
+    if role not in ("lead", "member", "pm"):
+        raise bad("Role must be lead, pm or member.")
+    is_pm = 1 if role == "pm" else 0
+    role = "member" if role == "pm" else role  # a Project Manager is a member who can also run projects
     check_role_change(h, tid, role)
     uid = None
     login = s_field(h.body, "login", 120).lower()
@@ -1027,8 +1057,8 @@ def api_person_add(h, tid):
         key = slug(name)
         while h.con.execute("SELECT 1 FROM people WHERE team_id=? AND key=?", (tid, key)).fetchone():
             key += "-2"
-        cur = h.con.execute("INSERT INTO people(team_id,key,name,role,user_id,active,created_at) VALUES(?,?,?,?,?,1,?)",
-                            (tid, key, name, role, uid, now_iso()))
+        cur = h.con.execute("INSERT INTO people(team_id,key,name,role,user_id,active,created_at,is_pm) VALUES(?,?,?,?,?,1,?,?)",
+                            (tid, key, name, role, uid, now_iso(), is_pm))
     return {"id": cur.lastrowid, "key": key, "joined": uid is not None}
 
 
@@ -1043,9 +1073,11 @@ def get_person(h, tid, pid):
 def api_person_update(h, tid, pid):
     h.need_lead(tid)
     p = get_person(h, tid, pid)
-    role = h.body.get("role", p["role"])
-    if role not in ("lead", "member"):
-        raise bad("Role must be lead or member.")
+    role = h.body.get("role", "pm" if p.get("is_pm") and p["role"] == "member" else p["role"])
+    if role not in ("lead", "member", "pm"):
+        raise bad("Role must be lead, pm or member.")
+    is_pm = 1 if role == "pm" else 0
+    role = "member" if role == "pm" else role
     if role != p["role"] or p["role"] == "lead":
         check_role_change(h, tid, role, p)
     name = s_field(h.body, "name", 60, True, p["name"])
@@ -1063,7 +1095,7 @@ def api_person_update(h, tid, pid):
             raise bad("That account is already on this team under another name.")
         uid = u["id"]
     with Tx(h.con):
-        h.con.execute("UPDATE people SET name=?, role=?, active=?, user_id=? WHERE id=?", (name, role, active, uid, p["id"]))
+        h.con.execute("UPDATE people SET name=?, role=?, active=?, user_id=?, is_pm=? WHERE id=?", (name, role, active, uid, is_pm, p["id"]))
         if uid and not p["user_id"]:
             h.con.execute("DELETE FROM invites WHERE person_id=? AND used_at IS NULL", (p["id"],))
         if not active:
@@ -1111,10 +1143,17 @@ def load_tasks(h, tid, approved_only=False):
     out = []
     q = "SELECT * FROM tasks WHERE team_id=?" + (" AND approved=1" if approved_only else "") + " ORDER BY no"
     days = team_archive_days(h.con, tid)
+    pnames = {r["id"]: r["name"] for r in h.con.execute("SELECT id, name FROM projects WHERE team_id=?", (tid,))}
+    items = {r["id"]: (r["name"], r["parent_name"]) for r in h.con.execute(
+        "SELECT i.id, i.name, p.name AS parent_name FROM project_items i LEFT JOIN project_items p ON p.id=i.parent_id "
+        "JOIN projects pr ON pr.id=i.project_id WHERE pr.team_id=?", (tid,))}
     for r in h.con.execute(q, (tid,)):
         t = dict(r)
         t["lead"], t["support"] = json.loads(t["lead"]), json.loads(t["support"])
         t["_archive_days"] = days
+        t["_project_name"] = pnames.get(t.get("project_id"))
+        if t.get("project_item_id") in items:
+            t["_item_name"], t["_phase_name"] = items[t["project_item_id"]]
         out.append(t)
     return out
 
@@ -1134,7 +1173,9 @@ def task_out(t, role, my_key, uid, td, req=None):
            "pending": not t["target"] and bool(t["requested_target"]), "actualDate": t["actual_date"], "status": status_of(t, td),
            "archived": is_archived(t, td), "canEdit": can_edit(role, my_key, t), "approved": bool(t["approved"]),
            "changePending": bool(req) and req["kind"] == "edit", "imported": bool(t["imported"]), "updatedAt": t["updated_at"],
-           "pendingFields": sorted(k for k in json.loads(req["data"]) if k in ("target", "actual_date")) if req and req["kind"] == "edit" else []}
+           "pendingFields": sorted(k for k in json.loads(req["data"]) if k in ("target", "actual_date")) if req and req["kind"] == "edit" else [],
+           "projectId": t.get("project_id"), "projectItemId": t.get("project_item_id"),
+           "projectName": t.get("_project_name"), "projectItemName": t.get("_item_name"), "projectPhaseName": t.get("_phase_name")}
     if req and req["kind"] == "edit" and (req["by_user"] == uid or role in ("lead", "admin")):
         out["request"] = {"id": req["id"], "mine": req["by_user"] == uid, "data": json.loads(req["data"]), "at": req["at"]}
     return out
@@ -1152,7 +1193,7 @@ def api_tasks(h, tid):
 
 TASK_FIELDS = [("category", "Category"), ("title", "Main task"), ("customer", "Customer"), ("urgency", "Urgency"), ("percent", "Task percentage"),
                ("progress", "Task progress"), ("lead", "Lead engineer"), ("support", "Support engineer"), ("start_date", "Start date"),
-               ("actual_date", "Actual date")]
+               ("actual_date", "Actual date"), ("project_id", "Project"), ("project_item_id", "Project activity")]
 
 
 OUTSIDE = "ext:"  # support engineers from outside the team are stored by name with this prefix
@@ -1198,6 +1239,28 @@ def parse_task(h, tid, body, team):
          "lead": ppl("lead"), "support": ppl("support", outside_ok=True), "start_date": d_field(body, "startDate"), "actual_date": d_field(body, "actualDate")}
     if not d["lead"]:
         raise bad("Choose at least one Lead Engineer.")
+    # optional link to a project and one of its phases / activities; the client then comes from the project
+    pid, iid = body.get("projectId"), body.get("projectItemId")
+    d["project_id"] = d["project_item_id"] = None
+    if pid not in (None, "", 0):
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            raise bad("Choose a project from the list.")
+        pr = h.con.execute("SELECT id, client FROM projects WHERE id=? AND team_id=?", (pid, tid)).fetchone()
+        if not pr:
+            raise bad("Choose one of this team's projects.")
+        d["project_id"] = pid
+        if pr["client"]:
+            d["customer"] = pr["client"]
+        if iid not in (None, "", 0):
+            try:
+                iid = int(iid)
+            except (TypeError, ValueError):
+                raise bad("Choose an activity from the project's plan.")
+            if not h.con.execute("SELECT 1 FROM project_items WHERE id=? AND project_id=?", (iid, pid)).fetchone():
+                raise bad("Choose an activity from this project's plan.")
+            d["project_item_id"] = iid
     d["support"] = [k for k in d["support"] if k not in d["lead"]]  # a lead engineer isn't also listed as support
     if d["actual_date"]:
         d["percent"] = 100
@@ -1314,11 +1377,11 @@ def api_task_create(h, tid):
         no = (h.con.execute("SELECT MAX(no) FROM tasks WHERE team_id=?", (tid,)).fetchone()[0] or 0) + 1
         cur = h.con.execute(
             "INSERT INTO tasks(team_id,no,category,title,progress,percent,urgency,customer,lead,support,start_date,requested_target,"
-            "target,target_set_by,target_set_at,actual_date,created_by,created_at,updated_by,updated_at,approved) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "target,target_set_by,target_set_at,actual_date,created_by,created_at,updated_by,updated_at,approved,project_id,project_item_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, no, d["category"], d["title"], d["progress"], d["percent"], d["urgency"], d["customer"], json.dumps(d["lead"]),
              json.dumps(d["support"]), d["start_date"], target, target if lead else None, h.user["id"] if lead and target else None,
-             ts if lead and target else None, d["actual_date"], h.user["id"], ts, h.user["id"], ts, 1))
+             ts if lead and target else None, d["actual_date"], h.user["id"], ts, h.user["id"], ts, 1, d["project_id"], d["project_item_id"]))
         task_id = cur.lastrowid
         log(h, task_id, "create", [])
         if lead and target:
@@ -1482,6 +1545,16 @@ def api_task_history(h, task_id):
         if r["kind"] in ("request", "withdraw") and isinstance(ch, dict) and "fields" not in ch:
             was = None if (r["at"], r["user_id"]) in created_at else "?"
             r["changes"] = {"fields": [[k, was, ch[k]] for k in ("target", "actual_date") if ch.get(k)]}
+    # project and activity changes are stored as ids; show their names
+    pn = {x["id"]: x["name"] for x in h.con.execute("SELECT id, name FROM projects WHERE team_id=?", (t["team_id"],))}
+    inames = {x["id"]: x["name"] for x in h.con.execute(
+        "SELECT i.id, i.name FROM project_items i JOIN projects p ON p.id=i.project_id WHERE p.team_id=?", (t["team_id"],))}
+    for r in rows:
+        if r["kind"] == "edit" and isinstance(r["changes"], list):
+            for c in r["changes"]:
+                if len(c) == 3 and c[0] in ("project_id", "project_item_id"):
+                    m = pn if c[0] == "project_id" else inames
+                    c[1], c[2] = m.get(c[1], c[1] and "(deleted)"), m.get(c[2], c[2] and "(deleted)")
     entries = []
     for r in rows:
         if r["id"] in folded:
@@ -1619,6 +1692,398 @@ def api_request_cancel(h, rid):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- routes: projects
+PROJECT_STATUSES = ["Planned", "Active", "On Hold", "Completed", "Cancelled"]
+ITEM_STATUSES = ["Not Started", "In Progress", "Completed", "At Risk"]
+# Phase colours: dark for the phase bar, light for its activities (as in the team's Excel timeline)
+PHASE_COLOURS = [("1F7A99", "A9CCD8"), ("ED7D31", "F8CDB0"), ("C00000", "E79E9E"), ("FFC000", "FFE79E"), ("2E75B6", "AFCAE3"), ("00B050", "9EE0BC")]
+# The one template: an implementation project, from the Affin Rentas API timeline (working-day numbers from the start date)
+PROJECT_TEMPLATE = [
+    ("Requirement Study", "Signed-off requirement spec", 1, 5, [
+        ("activity", "Kick-off meeting with customer team", 1, 1), ("activity", "Requirement discussion", 2, 3),
+        ("activity", "Technical requirement discussion", 4, 5), ("activity", "System requirement: proxy whitelist request", 2, 5),
+        ("activity", "System requirement: firewall request", 2, 5), ("activity", "System requirement: OS library installation", 2, 5),
+        ("milestone", "Job Design Document and sign-off", 5, 5)]),
+    ("Development", "Scripts and configuration ready for testing", 6, 20, [
+        ("activity", "Script / configuration development", 6, 18), ("activity", "Deployment to test environment", 19, 20),
+        ("milestone", "Development complete", 20, 20)]),
+    ("System Integration Testing - SIT", "SIT test result and sign-off", 21, 25, [
+        ("activity", "SIT testing", 21, 24), ("activity", "SIT report preparation", 25, 25), ("milestone", "SIT sign-off", 25, 25)]),
+    ("User Acceptance Testing & Support - UAT", "UAT test results and sign-off", 26, 40, [
+        ("activity", "UAT environment configuration", 26, 30), ("activity", "UAT test script discussion", 31, 32),
+        ("activity", "Scheduled run (1st run)", 33, 34), ("activity", "Scheduled run (2nd run)", 35, 36),
+        ("activity", "Scheduled run (3rd run)", 37, 38), ("activity", "UAT report preparation", 39, 40), ("milestone", "UAT sign-off", 40, 40)]),
+    ("Production Preparation", "Change request approved; production readiness signed off", 41, 45, [
+        ("activity", "Go-live checklist preparation", 41, 41), ("activity", "Go-live checklist discussion", 42, 42),
+        ("activity", "Change request approval", 43, 45), ("activity", "Production system requirement: proxy whitelist request", 43, 45),
+        ("activity", "Production system requirement: firewall request", 43, 45),
+        ("activity", "Production system requirement: OS library installation", 43, 45),
+        ("milestone", "Dry run and production readiness checklist sign-off", 45, 45)]),
+    ("Go-Live", "Go-live confirmation", 46, 48, [
+        ("activity", "First scheduled production run", 46, 46), ("activity", "Confirm output received by business users", 46, 46),
+        ("activity", "Monitor initial runs", 47, 48), ("milestone", "Go-live confirmation & sign-off", 48, 48)]),
+]
+PROJECT_TEMPLATES = {"implementation": "Implementation project (Requirement Study, Development, SIT, UAT, Production Preparation, Go-Live)"}
+
+
+def workday_dates(start, holidays, upto):
+    """Day 1 is the start date; day n is n-1 working days later, skipping weekends and the project's holidays (Excel WORKDAY)."""
+    d = dt.date.fromisoformat(start)
+    out = [None, d]
+    while len(out) <= upto:
+        d += dt.timedelta(days=1)
+        if d.weekday() < 5 and d.isoformat() not in holidays:
+            out.append(d)
+    return out
+
+
+def project_rows(h, pid):
+    return [dict(r) for r in h.con.execute("SELECT * FROM project_items WHERE project_id=? ORDER BY seq, id", (pid,))]
+
+
+def project_out(h, p, detail=False):
+    """A project with its computed dates, statuses and progress. Rules follow the team's Excel timeline:
+    a phase is At Risk if any of its items is (or is overdue), Completed if all are, Not Started if none started."""
+    td = today()
+    hol = {r["date"]: r["name"] for r in h.con.execute("SELECT date, name FROM project_holidays WHERE project_id=? ORDER BY date", (p["id"],))}
+    rows = project_rows(h, p["id"])
+    upto = max([r["end_day"] for r in rows] + [1])
+    days = workday_dates(p["start_date"], hol, upto)
+    phases = [r for r in rows if r["kind"] == "phase"]
+    kids = {}
+    for r in rows:
+        if r["parent_id"]:
+            kids.setdefault(r["parent_id"], []).append(r)
+    for r in rows:
+        r["startDate"], r["endDate"] = days[r["start_day"]].isoformat(), days[r["end_day"]].isoformat()
+    for r in rows:
+        if r["kind"] != "phase":
+            r["overdue"] = r["status"] != "Completed" and r["endDate"] < td
+    for ph in phases:
+        ks = kids.get(ph["id"], [])
+        st = [("At Risk" if k["overdue"] else k["status"]) for k in ks]
+        ph["status"] = ("Not Started" if not st else "At Risk" if "At Risk" in st else "Completed" if all(x == "Completed" for x in st)
+                        else "Not Started" if all(x == "Not Started" for x in st) else "In Progress")
+        ph["overdue"] = ph["status"] != "Completed" and ph["endDate"] < td
+    items = [r for r in rows if r["kind"] != "phase"]
+    done = sum(1 for r in items if r["status"] == "Completed")
+    risky = [r for r in items if r["overdue"] or r["status"] == "At Risk"]
+    health = "At Risk" if p["status"] in ("Planned", "Active") and risky else p["status"]
+    pm = h.con.execute("SELECT name FROM people WHERE id=?", (p["pm_person_id"],)).fetchone() if p["pm_person_id"] else None
+    out = {"id": p["id"], "teamId": p["team_id"], "client": p["client"], "name": p["name"], "description": p["description"],
+           "pmPersonId": p["pm_person_id"], "pmName": pm["name"] if pm else None, "startDate": p["start_date"],
+           "endDate": max([r["endDate"] for r in rows] + [p["start_date"]]),
+           "goLive": phases[-1]["endDate"] if phases else None, "status": p["status"], "displayStatus": health,
+           "progress": done / len(items) if items else 0, "activities": len(items), "completed": done,
+           "overdue": sum(1 for r in items if r["overdue"]), "atRisk": len(risky),
+           "linkedTasks": h.con.execute("SELECT COUNT(*) FROM tasks WHERE project_id=?", (p["id"],)).fetchone()[0],
+           "updatedAt": p["updated_at"]}
+    if detail:
+        counts = {r["project_item_id"]: r["n"] for r in h.con.execute(
+            "SELECT project_item_id, COUNT(*) AS n FROM tasks WHERE project_id=? AND project_item_id IS NOT NULL GROUP BY project_item_id", (p["id"],))}
+        def item(r):
+            return {"id": r["id"], "kind": r["kind"], "name": r["name"], "deliverable": r["deliverable"], "owner": r["owner"],
+                    "startDay": r["start_day"], "endDay": r["end_day"], "startDate": r["startDate"], "endDate": r["endDate"],
+                    "status": r["status"], "overdue": r["overdue"], "remarks": r["remarks"], "tasks": counts.get(r["id"], 0)}
+        out["phases"] = [dict(item(ph), items=[item(k) for k in kids.get(ph["id"], [])]) for ph in phases]
+        out["holidays"] = [{"date": d, "name": n} for d, n in hol.items()]
+        out["calendar"] = [d.isoformat() for d in days[1:]]  # working day n -> date
+        out["today"] = td
+    return out
+
+
+def get_project(h, pid):
+    r = h.con.execute("SELECT * FROM projects WHERE id=?", (int(pid),)).fetchone()
+    if not r:
+        raise NOT_FOUND
+    return dict(r)
+
+
+def project_rights(h, p):
+    role = h.need_member(p["team_id"])
+    me = h.my_person(p["team_id"])
+    edit = role in ("lead", "admin") or bool(me and p["pm_person_id"] == me["id"])
+    return role, me, edit
+
+
+def can_create_projects(h, tid):
+    role = h.need_member(tid)
+    me = h.my_person(tid)
+    return role in ("lead", "admin") or bool(me and me.get("is_pm"))
+
+
+def project_fields(h, tid, body, cur=None):
+    cur = cur or {}
+    name = s_field(body, "name", 150, True, cur.get("name", ""))
+    client = s_field(body, "client", 100, False, cur.get("client", ""))
+    desc = s_field(body, "description", 4000, False, cur.get("description", ""))
+    start = d_field(body, "startDate") if "startDate" in body else cur.get("start_date")
+    if not start:
+        raise bad("Choose the project start date.")
+    status = body.get("status", cur.get("status", "Planned"))
+    if status not in PROJECT_STATUSES:
+        raise bad("Status must be one of: %s." % ", ".join(PROJECT_STATUSES))
+    pm = body.get("pmPersonId", cur.get("pm_person_id"))
+    if pm in ("", 0):
+        pm = None
+    if pm is not None:
+        try:
+            pm = int(pm)
+        except (TypeError, ValueError):
+            raise bad("Choose the project manager from the list.")
+        ok = h.con.execute("SELECT 1 FROM people WHERE id=? AND team_id=? AND active=1 AND (is_pm=1 OR role='lead')", (pm, tid)).fetchone()
+        if not ok:
+            raise bad("The project manager must be one of this team's Project Managers or team leads.")
+    return {"name": name, "client": client, "description": desc, "start_date": start, "status": status, "pm_person_id": pm}
+
+
+def insert_template(h, pid):
+    seq = 0
+    for name, deliv, a, b, kids in PROJECT_TEMPLATE:
+        seq += 1
+        ph = h.con.execute("INSERT INTO project_items(project_id,parent_id,seq,kind,name,deliverable,start_day,end_day) VALUES(?,?,?,?,?,?,?,?)",
+                           (pid, None, seq, "phase", name, deliv, a, b)).lastrowid
+        for kind, kname, ka, kb in kids:
+            seq += 1
+            h.con.execute("INSERT INTO project_items(project_id,parent_id,seq,kind,name,start_day,end_day) VALUES(?,?,?,?,?,?,?)",
+                          (pid, ph, seq, kind, kname, ka, kb))
+
+
+@route("GET", "/api/teams/([a-z0-9-]+)/projects")
+def api_projects(h, tid):
+    h.need_member(tid)
+    rows = h.con.execute("SELECT * FROM projects WHERE team_id=? ORDER BY CASE status WHEN 'Active' THEN 0 WHEN 'Planned' THEN 1 "
+                         "WHEN 'On Hold' THEN 2 WHEN 'Completed' THEN 3 ELSE 4 END, start_date DESC, name", (tid,)).fetchall()
+    return {"projects": [project_out(h, dict(r)) for r in rows], "canCreate": can_create_projects(h, tid), "templates": PROJECT_TEMPLATES,
+            "statuses": PROJECT_STATUSES}
+
+
+@route("POST", "/api/teams/([a-z0-9-]+)/projects")
+def api_project_create(h, tid):
+    if not can_create_projects(h, tid):
+        raise ApiError(403, "Only team leads and Project Managers can create projects.")
+    f = project_fields(h, tid, h.body)
+    me = h.my_person(tid)
+    if f["pm_person_id"] is None and me and me.get("is_pm"):
+        f["pm_person_id"] = me["id"]  # a Project Manager creating a project manages it
+    template = h.body.get("template") or ""
+    if template and template not in PROJECT_TEMPLATES:
+        raise bad("Unknown template.")
+    ts = now_iso()
+    with Tx(h.con):
+        pid = h.con.execute("INSERT INTO projects(team_id,client,name,description,pm_person_id,start_date,status,created_by,created_at,updated_at) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?)", (tid, f["client"], f["name"], f["description"], f["pm_person_id"], f["start_date"],
+                                                            f["status"], h.user["id"], ts, ts)).lastrowid
+        if template:
+            insert_template(h, pid)
+    return {"id": pid}
+
+
+@route("GET", "/api/projects/([0-9]+)")
+def api_project(h, pid):
+    p = get_project(h, pid)
+    role, me, edit = project_rights(h, p)
+    out = project_out(h, p, detail=True)
+    out["canEdit"], out["canDelete"] = edit, role in ("lead", "admin")
+    tasks = h.con.execute("SELECT t.id, t.no, t.title, t.lead, t.project_item_id, t.actual_date, t.target, t.requested_target FROM tasks t "
+                          "WHERE t.project_id=? ORDER BY t.no", (p["id"],)).fetchall()
+    out["tasks"] = [{"id": t["id"], "no": t["no"], "title": t["title"], "lead": json.loads(t["lead"]), "itemId": t["project_item_id"],
+                     "status": status_of(t)} for t in tasks]
+    return out
+
+
+@route("PUT", "/api/projects/([0-9]+)")
+def api_project_update(h, pid):
+    p = get_project(h, pid)
+    role, me, edit = project_rights(h, p)
+    if not edit:
+        raise ApiError(403, "Only the team lead or the project's manager can change it.")
+    f = project_fields(h, p["team_id"], h.body, p)
+    if f["pm_person_id"] != p["pm_person_id"] and role not in ("lead", "admin"):
+        raise ApiError(403, "Only the team lead can change the project manager.")
+    with Tx(h.con):
+        h.con.execute("UPDATE projects SET client=?, name=?, description=?, pm_person_id=?, start_date=?, status=?, updated_at=? WHERE id=?",
+                      (f["client"], f["name"], f["description"], f["pm_person_id"], f["start_date"], f["status"], now_iso(), p["id"]))
+    return {"ok": True}
+
+
+@route("DELETE", "/api/projects/([0-9]+)")
+def api_project_delete(h, pid):
+    p = get_project(h, pid)
+    role, _, _ = project_rights(h, p)
+    if role not in ("lead", "admin"):
+        raise ApiError(403, "Only the team lead can delete a project.")
+    with Tx(h.con):
+        h.con.execute("DELETE FROM projects WHERE id=?", (p["id"],))  # tasks keep their details; their project link is cleared
+    return {"ok": True}
+
+
+def _day(v, what):
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise bad("%s must be a whole number of working days." % what)
+    if not 1 <= n <= 1000:
+        raise bad("%s must be between day 1 and day 1000." % what)
+    return n
+
+
+@route("PUT", "/api/projects/([0-9]+)/plan")
+def api_project_plan(h, pid):
+    """Save the whole plan: {phases: [{id?, name, deliverable, startDay, endDay, items: [{id?, kind, name, owner, startDay, endDay,
+    status, remarks}]}], holidays: [{date, name}]}. Items left out are deleted (daily tasks keep their details, without the link)."""
+    p = get_project(h, pid)
+    _, _, edit = project_rights(h, p)
+    if not edit:
+        raise ApiError(403, "Only the team lead or the project's manager can change the plan.")
+    phases = h.body.get("phases")
+    if not isinstance(phases, list) or len(phases) > 40:
+        raise bad("The plan must be a list of up to 40 phases.")
+    existing = {r["id"] for r in project_rows(h, p["id"])}
+    total = sum(len(ph.get("items") or []) for ph in phases if isinstance(ph, dict))
+    if total > 400:
+        raise bad("A plan can have at most 400 activities.")
+    hols = h.body.get("holidays", None)
+    with Tx(h.con):
+        keep, seq = set(), 0
+
+        def save(row, parent):
+            nonlocal seq
+            seq += 1
+            kind = "phase" if parent is None else row.get("kind", "activity")
+            if kind not in ("activity", "milestone", "phase") or (parent is not None and kind == "phase"):
+                raise bad("Each row must be an activity or a milestone inside a phase.")
+            name = s_field(row, "name", 200, True)
+            a, b = _day(row.get("startDay"), "Start day of " + name), _day(row.get("endDay"), "End day of " + name)
+            if b < a:
+                raise bad("%s ends before it starts (day %d to day %d)." % (name, a, b))
+            status = row.get("status") or "Not Started"
+            if status not in ITEM_STATUSES:
+                raise bad("Status must be one of: %s." % ", ".join(ITEM_STATUSES))
+            vals = (parent, seq, kind, name, s_field(row, "deliverable", 300), s_field(row, "owner", 120), a, b, status, s_field(row, "remarks", 1000))
+            rid = row.get("id")
+            if isinstance(rid, int) and rid in existing:
+                h.con.execute("UPDATE project_items SET parent_id=?, seq=?, kind=?, name=?, deliverable=?, owner=?, start_day=?, end_day=?, "
+                              "status=?, remarks=? WHERE id=?", vals + (rid,))
+            else:
+                rid = h.con.execute("INSERT INTO project_items(parent_id,seq,kind,name,deliverable,owner,start_day,end_day,status,remarks,project_id) "
+                                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)", vals + (p["id"],)).lastrowid
+            keep.add(rid)
+            return rid
+
+        for ph in phases:
+            if not isinstance(ph, dict):
+                raise bad("Invalid phase.")
+            phid = save(ph, None)
+            items = ph.get("items") or []
+            if not isinstance(items, list):
+                raise bad("Invalid activities.")
+            for it in items:
+                if not isinstance(it, dict):
+                    raise bad("Invalid activity.")
+                save(it, phid)
+        for gone in existing - keep:
+            h.con.execute("DELETE FROM project_items WHERE id=?", (gone,))
+        if hols is not None:
+            if not isinstance(hols, list) or len(hols) > 200:
+                raise bad("Holidays must be a list of up to 200 dates.")
+            h.con.execute("DELETE FROM project_holidays WHERE project_id=?", (p["id"],))
+            for x in hols:
+                if not isinstance(x, dict):
+                    raise bad("Invalid holiday.")
+                d = d_field(x, "date")
+                if not d:
+                    raise bad("Each holiday needs a date.")
+                h.con.execute("INSERT OR REPLACE INTO project_holidays(project_id,date,name) VALUES(?,?,?)", (p["id"], d, s_field(x, "name", 100)))
+        h.con.execute("UPDATE projects SET updated_at=? WHERE id=?", (now_iso(), p["id"]))
+    return {"ok": True}
+
+
+def _weeks_label(a, b):
+    wa, wb = (a - 1) // 5 + 1, (b - 1) // 5 + 1
+    return "Week %d" % wa if wa == wb else "Week %d–%d" % (wa, wb)
+
+
+@route("GET", "/api/projects/([0-9]+)/export.xlsx")
+def api_project_export(h, pid):
+    """The plan in the layout of the team's Excel timeline: values only, no formulas."""
+    p = get_project(h, pid)
+    project_rights(h, p)
+    pr = project_out(h, p, detail=True)
+    C = xlsx.Cell
+    cells, merges = {}, []
+    ndays = max([it["endDay"] for ph in pr["phases"] for it in [ph] + ph["items"]] + [5])
+    ndays = ((ndays + 4) // 5) * 5  # whole weeks
+    G = 12  # first day column (M)
+    head = dict(bold=True, fill="1F4E79", color="FFFFFF", align="center", border=True, wrap=True)
+    cells[(0, 0)] = C("Project Title : %s" % pr["name"], bold=True, size=14)
+    merges.append((0, 0, 0, 11))
+    full = h.con.execute("SELECT full_name FROM clients WHERE name=?", (pr["client"],)).fetchone()
+    cells[(1, 0)] = C("Client : %s%s     Project manager : %s     Status : %s" % (
+        pr["client"] or "—", " (%s)" % full["full_name"] if full and full["full_name"] else "", pr["pmName"] or "—", pr["displayStatus"]), italic=True)
+    merges.append((1, 0, 1, 11))
+    cells[(2, 1)] = C("Project start date :", bold=True, align="right")
+    cells[(2, 2)] = C(pr["startDate"], date=True, border=True, align="center")
+    cells[(2, 4)] = C("Go-live:", bold=True, align="right")
+    cells[(2, 6)] = C(pr["goLive"], date=True, border=True, align="center") if pr["goLive"] else C("—")
+    cells[(2, 8)] = C("Activities completed:", bold=True, align="right")
+    cells[(2, 9)] = C(round(pr["progress"], 4), pct=True, border=True, align="center")
+    for i, t in enumerate(["No", "Phase / Activity", "Type", "Weeks", "Start Day", "End Day", "Start Date", "End Date", "Deliverable", "Owner", "Status", "Remarks"]):
+        cells[(4, i)] = C(t, **head)
+        merges.append((4, i, 6, i))
+    td = pr["today"]
+    for d in range(1, ndays + 1):
+        c = G + d - 1
+        if (d - 1) % 5 == 0:
+            cells[(4, c)] = C("Week %d" % ((d - 1) // 5 + 1), **head)
+            merges.append((4, c, 4, c + 4))
+        cells[(5, c)] = C(d, bold=True, align="center", border=True, fill="D9E1F2", size=9)
+        date = pr["calendar"][d - 1] if d - 1 < len(pr["calendar"]) else None
+        if date is None:
+            cal = workday_dates(pr["startDate"], {x["date"] for x in pr["holidays"]}, d)
+            date = cal[d].isoformat()
+        cells[(6, c)] = C(date[8:10] + "/" + date[5:7], align="center", border=True, size=8,
+                          fill="C00000" if date == td else "F2F2F2", color="FFFFFF" if date == td else None, bold=date == td)
+    status_fill = {"Completed": "C6EFCE", "In Progress": "DDEBF7", "At Risk": "FFC7CE"}
+    r = 7
+    for pi, ph in enumerate(pr["phases"]):
+        dark, light = PHASE_COLOURS[pi % len(PHASE_COLOURS)]
+        rows = [(str(pi + 1), ph, "Phase")] + [("%d.%d" % (pi + 1, ki + 1), k, k["kind"].capitalize()) for ki, k in enumerate(ph["items"])]
+        for no, it, typ in rows:
+            is_ph = typ == "Phase"
+            base = dict(border=True, bold=is_ph, fill="F2F2F2" if is_ph else None)
+            st = it["status"]
+            remark = it["remarks"] + ("; " if it["remarks"] else "") + "Overdue" if it.get("overdue") and st != "Completed" else it["remarks"]
+            vals = [no, ("" if is_ph else "   ") + it["name"], typ, _weeks_label(it["startDay"], it["endDay"]), it["startDay"], it["endDay"]]
+            for i, v in enumerate(vals):
+                cells[(r, i)] = C(v, align="center" if i in (0, 2, 3, 4, 5) else None, **base)
+            cells[(r, 6)] = C(it["startDate"], date=True, align="center", **base)
+            cells[(r, 7)] = C(it["endDate"], date=True, align="center", **base)
+            cells[(r, 8)] = C(it.get("deliverable", "") if is_ph else "", wrap=True, **base)
+            cells[(r, 9)] = C(it.get("owner", ""), **base)
+            cells[(r, 10)] = C(st, align="center", border=True, bold=is_ph, fill=status_fill.get(st, "F2F2F2" if is_ph else None))
+            cells[(r, 11)] = C(remark, wrap=True, **base)
+            for d in range(1, ndays + 1):
+                c = G + d - 1
+                inside = it["startDay"] <= d <= it["endDay"]
+                if typ == "Milestone":
+                    cells[(r, c)] = C("◆" if d == it["endDay"] else "", align="center", border=True, color="1F4E79", bold=True)
+                else:
+                    cells[(r, c)] = C("", border=True, fill=(dark if is_ph else light) if inside else None)
+            r += 1
+    widths = {0: 6, 1: 46, 2: 10, 3: 11, 4: 6, 5: 6, 6: 11, 7: 11, 8: 30, 9: 18, 10: 12, 11: 30}
+    for d in range(ndays):
+        widths[G + d] = 4.2
+    plan = xlsx.GridSheet("Plan", cells, widths, merges, freeze=(7, 2), heights={0: 22, 4: 18, 6: 28})
+    hc = {(0, 0): C("Public Holidays (excluded from working days)", bold=True, size=13), (2, 0): C("Date", **head), (2, 1): C("Holiday", **head)}
+    for i, x in enumerate(pr["holidays"]):
+        hc[(3 + i, 0)] = C(x["date"], date=True, border=True, align="center")
+        hc[(3 + i, 1)] = C(x["name"], border=True)
+    hsheet = xlsx.GridSheet("Holidays", hc, {0: 14, 1: 40}, freeze=(3, 0))
+    fname = re.sub(r"[^A-Za-z0-9 _-]", "", "%s %s Timeline %s" % (pr["client"], pr["name"], today().replace("-", ""))).strip() + ".xlsx"
+    return ("file", xlsx.build_grid([plan, hsheet]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fname)
+
+
 # ---------------------------------------------------------------- routes: KPI & export
 def kpi_range(h):
     y = dt.date.today().year
@@ -1749,10 +2214,21 @@ def _team_customer_lists(con):
     return [(r["id"], r["name"], json.loads(r["customers"])) for r in con.execute("SELECT id, name, customers FROM teams ORDER BY name COLLATE NOCASE")]
 
 
+def client_scope(h):
+    """Teams whose client list this person may manage: every team for an administrator, else the teams they lead."""
+    u = h.need_user()
+    if u["is_admin"]:
+        return {r["id"] for r in h.con.execute("SELECT id FROM teams")}
+    tids = {r["team_id"] for r in h.con.execute("SELECT team_id FROM people WHERE user_id=? AND active=1 AND role='lead'", (u["id"],))}
+    if not tids:
+        raise FORBIDDEN
+    return tids
+
+
 @route("GET", "/api/admin/customers")
 def api_admin_customers(h):
-    need_admin(h)
-    teams = _team_customer_lists(h.con)
+    scope = client_scope(h)
+    teams = [t for t in _team_customer_lists(h.con) if t[0] in scope]
     names = {}
     for tid, _, custs in teams:
         for c in custs:
@@ -1763,15 +2239,17 @@ def api_admin_customers(h):
     logos = {}
     for r in h.con.execute("SELECT id, team_id, name, updated_at FROM customer_logos ORDER BY updated_at DESC"):
         logos.setdefault(r["name"].lower(), "/api/teams/%s/logos/%d?v=%s" % (r["team_id"], r["id"], re.sub(r"\D", "", r["updated_at"])))
-    out = sorted(({"name": v["name"], "teams": v["teams"], "openTasks": open_counts.get(k, 0), "logo": logos.get(k)} for k, v in names.items()),
-                 key=lambda x: x["name"].lower())
-    return {"teams": [{"id": t, "name": n} for t, n, _ in teams], "customers": out}
+    full = {r["name"].lower(): r["full_name"] for r in h.con.execute("SELECT name, full_name FROM clients")}
+    out = sorted(({"name": v["name"], "fullName": full.get(k, ""), "teams": v["teams"], "openTasks": open_counts.get(k, 0), "logo": logos.get(k)}
+                  for k, v in names.items()), key=lambda x: x["name"].lower())
+    return {"teams": [{"id": t, "name": n} for t, n, _ in teams], "customers": out, "isAdmin": bool(h.user["is_admin"])}
 
 
 @route("PUT", "/api/admin/customers")
 def api_admin_customer_put(h):
-    """Add a customer, or change which teams it belongs to. Body: {name, teams: [team ids]}."""
-    need_admin(h)
+    """Add a client, change its full name, or change which teams it belongs to. Body: {name, fullName?, teams: [team ids]}.
+    Team leads can only add or remove their own teams; other teams keep the client as they are."""
+    scope = client_scope(h)
     name = s_field(h.body, "name", 100, True)
     want = h.body.get("teams")
     if not isinstance(want, list) or not all(isinstance(x, str) for x in want):
@@ -1781,6 +2259,10 @@ def api_admin_customer_put(h):
         known = {t for t, _, _ in teams}
         if set(want) - known:
             raise bad("Unknown team: %s" % ", ".join(sorted(set(want) - known)))
+        if set(want) - scope:
+            raise FORBIDDEN
+        # teams outside this person's scope keep the client exactly as they are
+        want = list(set(want) | {t for t, _, custs in teams if t not in scope and any(c.lower() == name.lower() for c in custs)})
         # keep the spelling already in use, if any team has this customer
         for _, _, custs in teams:
             for c in custs:
@@ -1802,13 +2284,17 @@ def api_admin_customer_put(h):
             else:
                 continue
             h.con.execute("UPDATE teams SET customers=? WHERE id=?", (json.dumps(custs), tid))
+        if "fullName" in h.body:
+            full = s_field(h.body, "fullName", 150)
+            h.con.execute("INSERT INTO clients(name, full_name, created_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET full_name=excluded.full_name",
+                          (name, full, now_iso()))
     return {"ok": True, "name": name}
 
 
 @route("PUT", "/api/admin/customers/logo")
 def api_admin_customer_logo(h):
     """Set or clear one customer's logo in every team that has the customer. Body: {name, png} (png empty = use initials)."""
-    need_admin(h)
+    scope = client_scope(h)
     name = s_field(h.body, "name", 100, True)
     data = h.body.get("png") or ""
     raw = None
@@ -1820,7 +2306,7 @@ def api_admin_customer_logo(h):
         except ValueError:
             raise bad("png must be base64 text.")
     with Tx(h.con):
-        tids = [t for t, _, custs in _team_customer_lists(h.con) if any(c.lower() == name.lower() for c in custs)]
+        tids = [t for t, _, custs in _team_customer_lists(h.con) if t in scope and any(c.lower() == name.lower() for c in custs)]
         if not tids:
             raise bad("No team has the customer '%s'. Assign it to a team first." % name)
         for tid in tids:

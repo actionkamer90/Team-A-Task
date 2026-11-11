@@ -45,9 +45,24 @@ class CustomerAndKpiTests(unittest.TestCase):
         self.assertEqual(r["team"]["G"], 1)
         self.admin.req("PUT", "/api/teams/kpi-check/people/%d" % pid, {"active": True})
 
-    def test_customers_admin_only(self):
-        self.assertEqual(self.lead.req("GET", "/api/admin/customers")[0], 403)
+    def test_clients_for_leads_and_admins(self):
+        # members can't manage clients
+        self.assertEqual(self.member.req("GET", "/api/admin/customers")[0], 403)
         self.assertEqual(self.member.req("PUT", "/api/admin/customers", {"name": "X", "teams": ["automation"]})[0], 403)
+        # a team lead sees only the teams they lead, and can add a client with its full name to their team
+        s, r, _ = self.lead.req("GET", "/api/admin/customers")
+        self.assertEqual((s, [t["id"] for t in r["teams"]]), (200, ["automation"]))
+        s, r, _ = self.lead.req("PUT", "/api/admin/customers", {"name": "RHB", "fullName": "RHB Bank Bhd", "teams": ["automation"]})
+        self.assertEqual(s, 200, r)
+        rhb = next(c for c in self.lead.req("GET", "/api/admin/customers")[1]["customers"] if c["name"] == "RHB")
+        self.assertEqual((rhb["fullName"], rhb["teams"]), ("RHB Bank Bhd", ["automation"]))
+        # ...but not to a team they don't lead, and removing it from their team leaves other teams alone
+        self.assertEqual(self.lead.req("PUT", "/api/admin/customers", {"name": "RHB", "teams": ["automation", "kpi-check"]})[0], 403)
+        self.admin.req("PUT", "/api/admin/customers", {"name": "RHB", "teams": ["automation", "kpi-check"]})
+        self.assertEqual(self.lead.req("PUT", "/api/admin/customers", {"name": "RHB", "teams": []})[0], 200)
+        rhb = next(c for c in self.admin.req("GET", "/api/admin/customers")[1]["customers"] if c["name"] == "RHB")
+        self.assertEqual(rhb["teams"], ["kpi-check"])
+        self.admin.req("PUT", "/api/admin/customers", {"name": "RHB", "teams": []})
 
     def test_assign_customer_to_teams(self):
         s, r, _ = self.admin.req("PUT", "/api/admin/customers", {"name": "Shared Co", "teams": ["automation", "kpi-check"]})

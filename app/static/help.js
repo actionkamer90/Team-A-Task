@@ -52,7 +52,7 @@ function helpGuide(isAdmin) {
   const steps = items => h("ol", {}, items.map(i => h("li", {}, i)));
   const toc = [["start", "Getting started"], ["roles", "Who can do what"], ["tracker", "Tracker tab"], ["status", "What each status means"],
     ["update", "Adding and updating tasks"], ["approve", "Approvals and My Requests"], ["archive", "Archive"], ["summary", "Summary"],
-    ["kpi", "KPI Dashboard"], ["team", "Team & Invites"], ["admin", "Customers and All Teams"], ["export", "Export to Excel"]];
+    ["projects", "Projects"], ["kpi", "KPI Dashboard"], ["team", "Team & Invites"], ["admin", "Clients and All Teams"], ["export", "Export to Excel"]];
   return h("div", { class: "help-guide" },
     h("nav", { class: "help-toc", "aria-label": "User guide contents" }, h("span", { class: "lbl", text: "On this page" }),
       h("ul", {}, toc.map(([id, t]) => h("li", {}, h("a", { href: "#help-" + id, text: t, onclick: e => { e.preventDefault(); document.getElementById("help-" + id)?.scrollIntoView({ block: "start" }); } }))))),
@@ -69,6 +69,7 @@ function helpGuide(isAdmin) {
       sec("roles", "Who can do what",
         helpTable(["Role", "Can do"], [
           [B("Member"), "See the team's tasks. Add tasks you lead. Change tasks where you are a Lead Engineer; the changes save straight away. A new target date, or a completed date earlier than today, waits for the team lead's approval. Support engineers can see a task but not change it."],
+          [B("Project Manager"), "Everything a member can do, plus create projects and run the plans of the projects they manage. The team lead makes someone a Project Manager on Team & Invites."],
           [B("Team lead"), "Change any task in the team directly. Approve or reject proposed target dates and backdated completions. See the KPI Dashboard. Invite and remove members. Edit the team's categories, customers and KPI settings."],
           [B("Administrator"), "Everything, on every team. Create teams, add team leads and manage other administrators."],
         ])),
@@ -113,6 +114,16 @@ function helpGuide(isAdmin) {
         ])),
       sec("archive", "Archive",
         P("Finished tasks appear here a set number of days after their actual date: 2 unless your team lead changes it in Team & Invites → Team settings (0 to 90 days; 0 means as soon as the task is completed). Search, filter and sort work the same as on the Tracker; by default the most recently completed tasks come first. Open a task to read its history.")),
+      sec("projects", "Projects",
+        P("A project groups the work for one client: its phases (for example Requirement Study, SIT, UAT, Production Preparation, Go-Live), the activities and milestones (◆) in each phase, who owns them and their status. The team lead or the project's Project Manager registers it and keeps the plan up to date."),
+        list([
+          [B("New project: "), "client, name, description, project manager, start date and status. Start from the implementation template, which adds the usual phases and activities with typical durations, or from a blank plan."],
+          [B("Edit plan: "), "dates are counted in working days from the start date, like the Excel timeline: day 1 is the start date, weekends and the project's own public holidays are skipped. Change a start or end day and the dates update. Each project keeps its own holiday list, because customers can be overseas."],
+          [B("Status: "), "each activity is Not Started, In Progress, Completed or At Risk. An activity past its end date and not completed is marked Overdue. A phase follows its activities, and the whole project shows At Risk when anything in it is overdue or At Risk."],
+          [B("Timeline: "), "a Gantt chart with one column per working day, phase colours, ◆ for milestones and today's column in red. Hover over a bar for its dates and status."],
+          [B("Your daily tasks: "), "when a task belongs to a project, pick the project and its phase or activity on the task form; the client fills in by itself. Write the details in the task as usual. The task then shows under the project, and the Tracker can be filtered by project."],
+          [B("Export to Excel: "), "the plan in the same layout as the team's timeline workbook, with the Gantt colours and a Holidays sheet. Values only, no formulas."],
+        ])),
       sec("summary", "Summary",
         P("Task load by engineer (open tasks, as lead or support) and open tasks by customer. Useful for spreading work in the morning stand-up.")),
       sec("kpi", "KPI Dashboard (team leads)",
@@ -130,8 +141,8 @@ function helpGuide(isAdmin) {
           ["Forgotten password: use ", B("Reset password link"), " on their row and send them the new link."],
           [B("Customer icons: "), "every customer shows a coloured badge with its initials. In ", B("Team settings"), " you can upload a logo for a customer instead; it is shrunk to a small icon and shown beside the customer's name everywhere."],
         ])),
-      sec("admin", "Customers and All Teams (administrators)",
-        P(B("Customers"), ": every customer in one table. Add a customer, tick the teams that work with it, and upload its logo once for all of those teams. Unticking a customer's last team asks before removing it. Tasks that already name a customer keep it."),
+      sec("admin", "Clients and All Teams",
+        P(B("Clients"), " (team leads and administrators): every client with its short name (shown on tasks, e.g. RHB) and full name (e.g. RHB Bank Bhd). Add a client, tick the teams that work with it, and upload its logo once for all of those teams. Team leads see and change their own teams only. Unticking a client's last team asks before removing it. Tasks that already name a client keep it."),
         P(B("All Teams"), ": create teams, open any team, delete a team (type its name to confirm; the tracker saves a full backup of the database first), and manage administrators. To start a new team: create it, add its lead on Team & Invites, and send the lead an invite link. The lead invites the rest.")),
       sec("export", "Export to Excel",
         P(B("Export to Excel"), " on the Tracker and Archive downloads an .xlsx file with the Daily Task Tracker and Archive sheets. Team leads also get the KPI Scorecard and Lead Tasks by Category sheets for the KPI period."),

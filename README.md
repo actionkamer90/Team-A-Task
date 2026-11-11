@@ -26,9 +26,16 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Delete a team (administrators).** *All Teams → Delete*, then type the team's name to confirm. Its tasks,
   history, requests, members and customer logos are removed; logins stay. A full copy of the database is
   saved to `/data/backups/before-deleting-<team>-<date>.db` first.
-- **Customers tab (administrators).** One list of every customer: add a customer, tick which teams work with
-  it, and upload its logo once for all of those teams. Team leads can still edit their own team's list in
-  *Team settings*.
+- **Projects.** Team leads and Project Managers register a client's project: phases, activities and milestones
+  scheduled in working days from the start date (weekends and the project's own public holidays skipped), owner
+  and status per activity, and a Gantt timeline. Overdue activities make the project show **At Risk**. One
+  template (an implementation project) pre-fills the plan. Daily tasks can name a project and one of its
+  activities. *Export to Excel* writes the plan in the team's timeline layout (values only).
+- **Project Manager role.** A team lead makes a member a Project Manager on *Team & Invites*; they can create
+  projects and run the plans of projects they manage.
+- **Clients (team leads and administrators).** Every client with a short name (e.g. RHB) and full name
+  (e.g. RHB Bank Bhd): add a client, tick which teams work with it, and upload its logo once for those teams.
+  Team leads see their own teams only.
 - **Support from outside the team.** Under *Support engineer* you can type the name of someone outside the
   team. They show on the task and in exports, but not in the Engineer filter, the Summary or the KPI. A Lead
   engineer can't also be picked as Support. The Engineer filter lists current team members only.

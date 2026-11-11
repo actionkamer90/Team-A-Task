@@ -52,13 +52,14 @@ async function api(method, path, body) {
 }
 
 const DEFAULT_CATS = ["Pre-Sales", "Project", "Tickets", "Internal"];
+const ROLE_NAMES = { lead: "Team lead", pm: "Project Manager", member: "Member" };
 const STATUS_CLASS = { "Delay": "bad", "On-Going": "info", "No Target": "warn", "Completed Early": "early", "Completed On Time": "ok", "Completed Late": "warn", "Completed": "ok" };
 const RATING_CLASS = { "Excellent": "ok", "Good": "info", "Needs Improvement": "warn", "At Risk": "bad", "No Data": "" };
 
 /* ---------- state ---------- */
 const S = {
   phase: "loading", me: null, teams: [], teamId: null, team: null, tasks: [], view: store.get("tt.view") || "tracker",
-  f: { q: "", person: "", status: "", cat: "", urg: "", mine: false }, kpi: null, kpiData: null, invite: null, setupNeeded: false,
+  f: { q: "", person: "", status: "", cat: "", urg: "", mine: false, project: "" }, kpi: null, kpiData: null, invite: null, setupNeeded: false,
 };
 const team = () => S.team;
 const role = () => S.team?.role || null;
@@ -109,16 +110,18 @@ async function loadMe() {
 }
 async function selectTeam(id) {
   S.teamId = id; store.set("tt.team", id); S.kpiData = null;
-  const [t, tk] = await Promise.all([api("GET", "/api/teams/" + id), api("GET", "/api/teams/" + id + "/tasks")]);
-  S.team = t; S.tasks = tk.tasks; S.today = tk.today; S.pendingApprovals = tk.pendingApprovals; S.phase = "ready";
+  const [t, tk, pj] = await Promise.all([api("GET", "/api/teams/" + id), api("GET", "/api/teams/" + id + "/tasks"), api("GET", "/api/teams/" + id + "/projects")]);
+  S.team = t; S.tasks = tk.tasks; S.today = tk.today; S.pendingApprovals = tk.pendingApprovals; S.projects = pj; S.phase = "ready";
+  S.projectId = null;
   render();
 }
 async function reloadTeam() {
   if (!S.teamId) return;
   try {
-    const [t, tk] = await Promise.all([api("GET", "/api/teams/" + S.teamId), api("GET", "/api/teams/" + S.teamId + "/tasks")]);
+    const [t, tk, pj] = await Promise.all([api("GET", "/api/teams/" + S.teamId), api("GET", "/api/teams/" + S.teamId + "/tasks"),
+      api("GET", "/api/teams/" + S.teamId + "/projects")]);
     const shellChanged = t.role !== S.team?.role || tk.pendingApprovals !== S.pendingApprovals;
-    S.team = t; S.tasks = tk.tasks; S.today = tk.today; S.pendingApprovals = tk.pendingApprovals;
+    S.team = t; S.tasks = tk.tasks; S.today = tk.today; S.pendingApprovals = tk.pendingApprovals; S.projects = pj;
     if (shellChanged) render(); else refresh();
   } catch (e) { if (e.status === 403) loadMe(); }
 }
@@ -127,7 +130,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 
 /* ---------- shell ---------- */
 const VIEWS = [["tracker", "Tracker", () => true], ["completed", "Archive", () => true], ["summary", "Summary", () => true],
-  ["approvals", "Approvals", () => isLead()], ["requests", "My Requests", () => !isLead() && !!myKey()], ["kpi", "KPI Dashboard", () => isLead()], ["team", "Team & Invites", () => isLead()], ["customers", "Customers", () => S.me?.user?.isAdmin], ["admin", "All Teams", () => S.me?.user?.isAdmin], ["help", "Help", () => true]];
+  ["projects", "Projects", () => true], ["approvals", "Approvals", () => isLead()], ["requests", "My Requests", () => !isLead() && !!myKey()], ["kpi", "KPI Dashboard", () => isLead()], ["team", "Team & Invites", () => isLead()], ["customers", "Clients", () => S.me?.user?.isAdmin || isLead()], ["admin", "All Teams", () => S.me?.user?.isAdmin], ["help", "Help", () => true]];
 let refreshFn = null;
 function refresh() { if (refreshFn) refreshFn(); }
 function render() {
@@ -156,13 +159,13 @@ function render() {
       teamSel,
       h("button", { class: "chip-user", "aria-label": "Account", onclick: accountSheet },
         h("span", { class: "avatar", text: (u.name || u.login).slice(0, 1).toUpperCase() }), h("span", { text: u.name || u.login }),
-        h("span", { class: "role", text: r === "admin" ? "Admin" : r === "lead" ? "Team lead" : "Member" }))),
+        h("span", { class: "role", text: r === "admin" ? "Admin" : r === "lead" ? "Team lead" : team()?.isPm ? "Project Manager" : "Member" }))),
     h("nav", { class: "tabs wrap", role: "tablist" }, VIEWS.filter(v => v[2]()).map(([id, label]) => h("button", {
       role: "tab", "aria-selected": String(S.view === id), text: id === "approvals" && S.pendingApprovals ? label + " (" + S.pendingApprovals + ")" : label,
       onclick: () => { S.view = id; store.set("tt.view", id); render(); }
     })))));
   const main = h("main", { class: "wrap" }); app.append(main);
-  ({ tracker: viewTracker, completed: viewCompleted, approvals: viewApprovals, requests: viewRequests, summary: viewSummary, kpi: viewKPI, team: viewTeam, customers: viewCustomers, admin: viewAdmin, help: m => helpView(m, false) })[S.view](main);
+  ({ tracker: viewTracker, completed: viewCompleted, approvals: viewApprovals, requests: viewRequests, summary: viewSummary, kpi: viewKPI, team: viewTeam, projects: viewProjects, customers: viewCustomers, admin: viewAdmin, help: m => helpView(m, false) })[S.view](main);
   refresh();
 }
 function card(title, body) { return h("div", { class: "center" }, h("div", { class: "card" }, h("h2", { text: title }), body)); }
@@ -285,6 +288,7 @@ function filterBar(statuses) {
     h("label", { class: "field grow" }, h("span", { text: "Search" }), h("input", { type: "search", id: "f-q", placeholder: "Task, customer, progress note…", value: f.q, oninput: e => { f.q = e.target.value; refresh(); } })),
     sel("f-person", "Engineer", ppl.map(p => [p.key, p.name]), "person"), sel("f-status", "Status", statuses, "status"),
     sel("f-cat", "Category", cats, "cat"), sel("f-urg", "Urgency", team()?.urgencies || [], "urg"),
+    (S.projects?.projects || []).length ? sel("f-project", "Project", [["none", "No project"], ...S.projects.projects.map(p => [String(p.id), (p.client ? p.client + " · " : "") + p.name])], "project") : null,
     myKey() ? h("label", { class: "check" }, h("input", { type: "checkbox", id: "f-mine", checked: f.mine, onchange: e => { f.mine = e.target.checked; refresh(); } }), "Only my tasks") : null);
 }
 function applyFilters(list, ignoreStatus) {
@@ -293,7 +297,8 @@ function applyFilters(list, ignoreStatus) {
     if (f.person && !t.lead.includes(f.person) && !t.support.includes(f.person)) return false;
     if (f.mine && mk && !t.lead.includes(mk) && !t.support.includes(mk)) return false;
     if (f.status && !ignoreStatus && t.status !== f.status) return false; if (f.cat && t.category !== f.cat) return false; if (f.urg && t.urgency !== f.urg) return false;
-    if (q && ![t.title, t.customer, t.progress, t.category, ...t.lead.map(personName), ...t.support.map(personName)].join(" ").toLowerCase().includes(q)) return false;
+    if (f.project && String(t.projectId || "none") !== f.project) return false;
+    if (q && ![t.title, t.customer, t.progress, t.category, t.projectName, t.projectItemName, ...t.lead.map(personName), ...t.support.map(personName)].join(" ").toLowerCase().includes(q)) return false;
     return true;
   });
 }
@@ -369,7 +374,9 @@ function taskTable(list, archive) {
     h("tbody", {}, list.map(t => h("tr", { class: "click", tabindex: "0", onclick: () => taskSheet(t), onkeydown: e => { if (e.key === "Enter") taskSheet(t); } },
       h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }),
       h("td", { class: "nowrap", text: t.category || "—" }),
-      h("td", {}, h("div", { class: "task-title", text: t.title }), t.progress ? h("div", { class: "task-prog", text: t.progress }) : null),
+      h("td", {}, h("div", { class: "task-title", text: t.title }),
+        t.projectName ? h("div", { class: "task-proj", text: "▸ " + t.projectName + (t.projectItemName ? " › " + (t.projectPhaseName ? t.projectPhaseName + " › " : "") + t.projectItemName : "") }) : null,
+        t.progress ? h("div", { class: "task-prog", text: t.progress }) : null),
       h("td", { class: "num" }, h("div", { class: "pct" }, h("i", {}, h("em", { style: "width:" + t.percent + "%" })), h("span", { class: "mono", text: t.percent + "%" }))),
       h("td", {}, h("span", { class: "urg " + t.urgency, text: t.urgency })),
       h("td", { class: "nowrap" }, custLabel(t.customer)),
@@ -501,6 +508,30 @@ function taskSheet(t) {
   const fTitle = h("input", { type: "text", id: "t-title", value: T.title, disabled: locked, maxlength: "200", placeholder: "e.g. Quarterly health check" });
   const fCust = h("input", { type: "text", id: "t-cust", value: T.customer || "", disabled: locked, list: "cust-list", maxlength: "100" });
   const dl = h("datalist", { id: "cust-list" }, tm.customers.map(c => h("option", { value: c })));
+  // Project and activity: optional. Choosing a project fills in its client.
+  const projList = (S.projects?.projects || []).filter(p => !["Completed", "Cancelled"].includes(p.status) || p.id === T.projectId);
+  const fProj = h("select", { id: "t-proj", disabled: locked }, h("option", { value: "", text: "No project" }),
+    projList.map(p => h("option", { value: String(p.id), text: (p.client ? p.client + " · " : "") + p.name })));
+  fProj.value = T.projectId ? String(T.projectId) : "";
+  const fItem = h("select", { id: "t-item", disabled: locked || !T.projectId }, h("option", { value: "", text: "Choose the project first" }));
+  const fillItems = async (pid, keep) => {
+    fItem.replaceChildren(h("option", { value: "", text: pid ? "Loading…" : "Choose the project first" }));
+    fItem.disabled = true;
+    if (!pid) return;
+    try {
+      S.pdetail = S.pdetail || {};
+      const pr = S.pdetail[pid] = await api("GET", "/api/projects/" + pid);
+      fItem.replaceChildren(h("option", { value: "", text: "Whole project (no activity)" }),
+        ...pr.phases.map((ph, i) => h("optgroup", { label: (i + 1) + ". " + ph.name },
+          h("option", { value: String(ph.id), text: (i + 1) + ". " + ph.name + " (whole phase)" }),
+          ph.items.map((it, k) => h("option", { value: String(it.id), text: (i + 1) + "." + (k + 1) + " " + (it.kind === "milestone" ? "◆ " : "") + it.name })))));
+      fItem.value = keep ? String(keep) : "";
+      fItem.disabled = locked;
+      if (pr.client && !locked) { fCust.value = pr.client; fCust.disabled = true; fCust.dispatchEvent(new Event("input")); }
+    } catch (e) { fItem.replaceChildren(h("option", { value: "", text: "Couldn't load the plan" })); }
+  };
+  fProj.addEventListener("change", () => { if (!fProj.value) fCust.disabled = locked; fillItems(fProj.value, null); });
+  if (T.projectId) fillItems(String(T.projectId), T.projectItemId);
   const fUrg = h("select", { id: "t-urg", disabled: locked }, tm.urgencies.map(u => h("option", { value: u, text: u }))); fUrg.value = T.urgency;
   const fPct = h("input", { type: "number", id: "t-pct", min: "0", max: "100", step: "5", value: String(T.percent || 0), disabled: locked });
   const fProg = h("textarea", { id: "t-prog", disabled: locked, maxlength: "12000", placeholder: "Latest progress, one update per line" }); fProg.value = T.progress || "";
@@ -531,6 +562,8 @@ function taskSheet(t) {
   const body = [dl, ...banners,
     h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Category" }), fCat), h("label", { class: "field" }, h("span", { text: "Urgency" }), fUrg)),
     h("label", { class: "field" }, h("span", { text: "Main task / project" }), fTitle),
+    projList.length || T.projectId ? h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Project (optional)" }), fProj),
+      h("label", { class: "field" }, h("span", { text: "Phase / activity" }), fItem)) : null,
     h("label", { class: "field" }, h("span", { text: "Customer" }), (() => {
       const ico = h("span", { class: "cust-slot" }, custIcon(fCust.value));
       fCust.addEventListener("input", () => ico.replaceChildren(custIcon(fCust.value.trim()) || ""));
@@ -555,7 +588,8 @@ function taskSheet(t) {
     if (!leads.length) return toast("Choose at least one Lead Engineer.");
     if (!lead && !leads.includes(mk)) return toast("Keep yourself as a Lead Engineer. You can only manage tasks you lead.");
     const data = { category: fCat.value, title: fTitle.value, customer: fCust.value, urgency: fUrg.value, percent: Number(fPct.value) || 0, progress: fProg.value,
-      lead: leads, support: fSup.value(), startDate: fStart.value || null, actualDate: fActual.value || null, target: fTarget.value || null };
+      lead: leads, support: fSup.value(), startDate: fStart.value || null, actualDate: fActual.value || null, target: fTarget.value || null,
+      projectId: fProj.value ? Number(fProj.value) : null, projectItemId: fProj.value && fItem.value ? Number(fItem.value) : null };
     save.disabled = true;
     try {
       const r = isNew ? await api("POST", "/api/teams/" + S.teamId + "/tasks", data) : await api("PUT", "/api/tasks/" + t.id, data);
@@ -578,7 +612,8 @@ function taskSheet(t) {
   openSheet(isNew ? "New task" : "Task #" + String(t.no).padStart(3, "0"), body, foot);
 }
 const LOG_LABEL = { category: "Category", title: "Main task", customer: "Customer", urgency: "Urgency", percent: "Task percentage", lead: "Lead engineer",
-  support: "Support engineer", start_date: "Start date", requested_target: "Requested target", actual_date: "Actual date", target: "Target date" };
+  support: "Support engineer", start_date: "Start date", requested_target: "Requested target", actual_date: "Actual date", target: "Target date",
+  project_id: "Project", project_item_id: "Project activity" };
 function describe(f, v) {
   if (v === "?") return "(not recorded)";
   if (v == null || v === "" || (Array.isArray(v) && !v.length)) return "(empty)";
@@ -809,7 +844,7 @@ function viewTeam(main) {
     list.replaceChildren(ppl.length ? h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["Name", "Login", "Role", "Status", ""].map(c => h("th", { text: c })))),
       h("tbody", {}, ppl.map(p => {
         const [s, cl] = personStatus(p), canTouch = admin || p.role !== "lead";
-        return h("tr", {}, h("td", { text: p.name }), h("td", { class: "mono", text: p.login || "—" }), h("td", { text: p.role === "lead" ? "Team lead" : "Member" }),
+        return h("tr", {}, h("td", { text: p.name }), h("td", { class: "mono", text: p.login || "—" }), h("td", { text: ROLE_NAMES[p.role] || "Member" }),
           h("td", {}, h("span", { class: "pill " + cl, text: s }), p.inviteExpires && !p.joined ? h("div", { class: "muted small", text: "expires " + fmtDT(p.inviteExpires) }) : null),
           h("td", { class: "nowrap" }, canTouch ? h("button", { class: "btn small", text: "Edit", onclick: () => personSheet(p) }) : null,
             canTouch && p.active ? h("button", { class: "btn small", style: "margin-left:6px", text: p.joined ? "Reset password link" : (p.inviteExpires ? "New invite link" : "Create invite link"), onclick: () => linkFor(p) }) : null));
@@ -839,7 +874,9 @@ async function linkFor(p) {
 function personSheet(p) {
   const isNew = !p, admin = S.me.user.isAdmin;
   const fName = h("input", { type: "text", id: "p-name", value: p?.name || "", maxlength: "60", placeholder: "Name shown on tasks, e.g. Sarah" });
-  const fRole = h("select", { id: "p-role", disabled: !admin }, h("option", { value: "member", text: "Member: adds and updates tasks" }), h("option", { value: "lead", text: "Team lead: also sets target dates and sees KPIs" }));
+  const fRole = h("select", { id: "p-role", disabled: !admin && p?.role === "lead" }, h("option", { value: "member", text: "Member: adds and updates tasks" }),
+    h("option", { value: "pm", text: "Project Manager: also creates and runs projects" }),
+    h("option", { value: "lead", text: "Team lead: also sets target dates and sees KPIs", disabled: !admin }));
   fRole.value = p?.role || "member";
   const fLogin = h("input", { type: "text", id: "p-login", maxlength: "120", autocomplete: "off", placeholder: "Only if they already use the tracker" });
   const foot = [h("button", { class: "btn primary", text: isNew ? "Add person" : "Save", onclick: async () => {
@@ -861,7 +898,7 @@ function personSheet(p) {
   } }));
   openSheet(isNew ? "Add person" : "Edit " + p.name, [
     h("label", { class: "field" }, h("span", { text: "Display name" }), fName),
-    h("label", { class: "field" }, h("span", { text: "Role" }), fRole, admin ? null : h("small", { class: "muted", text: "Only the administrator can make someone a team lead." })),
+    h("label", { class: "field" }, h("span", { text: "Role" }), fRole, admin ? null : h("small", { class: "muted", text: "Only the administrator can make someone a team lead. You can make someone a Project Manager." })),
     isNew || !p.joined ? h("label", { class: "field" }, h("span", { text: isNew ? "Existing login (optional)" : "Link to an existing login (optional)" }), fLogin,
       h("small", { class: "muted", text: "If this person already has a tracker account for another team, enter that login so they use one account for both teams. Otherwise leave it empty and send an invite link." })) : null,
     p && !p.active ? h("div", { class: "note", text: "This person was removed. Saving adds them back to the team." }) : null], foot);
@@ -977,10 +1014,12 @@ function viewCustomers(main) {
   let data = null, q = "", confirmRemove = null;
   const icon = c => c.logo ? h("img", { class: "cust-ico big", src: c.logo, alt: "", width: "28", height: "28" })
     : h("span", { class: "cust-ico cust-b cust-b" + custHue(c.name) + " big" + (custInitials(c.name).length > 2 ? " wide" : ""), "aria-hidden": "true", text: custInitials(c.name) });
-  const save = async (name, teams, done) => {
-    try { await api("PUT", "/api/admin/customers", { name, teams }); toast(done); await load(); await reloadTeam(); } catch (e) { toast(e.message); await load(); }
+  const save = async (name, teams, done, fullName) => {
+    try { await api("PUT", "/api/admin/customers", fullName === undefined ? { name, teams } : { name, teams, fullName }); toast(done); await load(); await reloadTeam(); }
+    catch (e) { toast(e.message); await load(); }
   };
-  const fName = h("input", { type: "text", id: "nc-name", maxlength: "100", placeholder: "e.g. CIMB Bank", required: true });
+  const fName = h("input", { type: "text", id: "nc-name", maxlength: "100", placeholder: "Short name, e.g. CIMB", required: true });
+  const fFull = h("input", { type: "text", id: "nc-full", maxlength: "150", placeholder: "Full name, e.g. CIMB Bank Berhad" });
   const fTeams = h("div", { class: "nc-teams" });
   const addForm = h("form", { class: "panel nc-form", onsubmit: async e => {
     e.preventDefault();
@@ -988,14 +1027,15 @@ function viewCustomers(main) {
     if (!name) return toast("Enter the customer's name.");
     if (!teams.length) return toast("Tick at least one team for the new customer.");
     if (data.customers.some(c => c.name.toLowerCase() === name.toLowerCase())) return toast(name + " is already in the list. Tick its teams in the table instead.");
-    await save(name, teams, "Added " + name); fName.value = "";
-  } }, h("h3", { text: "Add a customer" }),
-    h("div", { class: "row nc-row" }, h("label", { class: "field grow" }, h("span", { text: "Customer name" }), fName),
+    await save(name, teams, "Added " + name, fFull.value.trim()); fName.value = ""; fFull.value = "";
+  } }, h("h3", { text: "Add a client" }),
+    h("div", { class: "row nc-row" }, h("label", { class: "field" }, h("span", { text: "Short name" }), fName), h("label", { class: "field grow" }, h("span", { text: "Full name" }), fFull),
       h("div", { class: "field" }, h("span", { text: "Teams that work with this customer" }), fTeams),
       h("button", { class: "btn primary", type: "submit", text: "Add customer" })));
   const search = h("input", { type: "search", id: "cust-q", placeholder: "Search customers…", oninput: e => { q = e.target.value.trim().toLowerCase(); draw(); } });
-  main.append(h("div", { class: "row between" }, h("h2", { text: "Customers" })),
-    h("p", { class: "muted m0", text: "Add customers and choose which teams work with them. A team's members see its customers as suggestions when they add a task, and the customer's icon beside its name. Removing a customer from a team doesn't change tasks that already name it." }),
+  main.append(h("div", { class: "row between" }, h("h2", { text: "Clients" })),
+    h("p", { class: "muted m0", text: "Add clients with their short name (shown on tasks, e.g. RHB) and full name (e.g. RHB Bank Bhd), and choose which teams work with them. " +
+      (S.me?.user?.isAdmin ? "" : "As a team lead you see and change your own teams only. ") + "Projects and tasks pick their client from this list. Removing a client from a team doesn't change tasks that already name it." }),
     addForm, h("div", { class: "bar" }, h("label", { class: "field grow" }, h("span", { text: "Search" }), search)), msg, body);
   function draw() {
     if (!data) return;
@@ -1004,7 +1044,7 @@ function viewCustomers(main) {
     msg.textContent = data.customers.length + " customers" + (q ? " · " + list.length + " shown" : "");
     if (!list.length) return body.replaceChildren(h("div", { class: "empty", text: data.customers.length ? "No customers match your search." : "No customers yet. Add the first one above." }));
     body.replaceChildren(h("div", { class: "tscroll" }, h("table", { class: "cust-table" },
-      h("thead", {}, h("tr", {}, h("th", { text: "Customer" }), data.teams.map(t => h("th", { class: "ctr", text: t.name })), h("th", { class: "num", text: "Open tasks" }), h("th", { text: "Icon" }), h("th", {}))),
+      h("thead", {}, h("tr", {}, h("th", { text: "Client" }), h("th", { text: "Full name" }), data.teams.map(t => h("th", { class: "ctr", text: t.name })), h("th", { class: "num", text: "Open tasks" }), h("th", { text: "Icon" }), h("th", {}))),
       h("tbody", {}, list.map(c => {
         const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/svg+xml", class: "sr-only", id: pickerId("cl"),
           onchange: async e => { const f = e.target.files[0]; e.target.value = ""; if (!f) return;
@@ -1012,6 +1052,8 @@ function viewCustomers(main) {
         const removing = confirmRemove === c.name;
         return h("tr", {},
           h("td", {}, h("span", { class: "cust" }, h("span", { class: "cust-slot big" }, icon(c)), h("b", { text: c.name }))),
+          h("td", {}, h("input", { type: "text", class: "cl-full", value: c.fullName || "", maxlength: "150", placeholder: "Full name", "aria-label": "Full name of " + c.name,
+            onchange: e => save(c.name, c.teams, "Saved the full name of " + c.name, e.target.value.trim()) })),
           data.teams.map(t => h("td", { class: "ctr" }, h("input", { type: "checkbox", checked: c.teams.includes(t.id), "aria-label": c.name + " in " + t.name,
             onchange: e => { const teams = e.target.checked ? [...c.teams, t.id] : c.teams.filter(x => x !== t.id);
               if (!teams.length) { e.target.checked = true; confirmRemove = c.name; return draw(); }

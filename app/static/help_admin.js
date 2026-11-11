@@ -4,8 +4,21 @@
 
 /* ---------- data model diagram ---------- */
 // Matches SCHEMA in server.py; tests/test_help.py checks that every table and column is listed here.
-const ERD_GROUPS = { id: ["Logins and access", "help-g-id"], team: ["Teams and people", "help-g-team"], work: ["Tasks and approvals", "help-g-work"] };
+const ERD_GROUPS = { id: ["Logins and access", "help-g-id"], team: ["Teams, people and clients", "help-g-team"], work: ["Tasks and approvals", "help-g-work"],
+  proj: ["Projects and plans", "help-g-proj"] };
 const ERD_TABLES = [
+  { n: "clients", g: "team", x: 20, y: 760, why: "A client's short name (as used on tasks and team client lists) and full name, e.g. RHB / RHB Bank Bhd.",
+    f: [["name", "PK", "short name, e.g. RHB"], ["full_name", "", "e.g. RHB Bank Bhd"], ["created_at", "", ""]] },
+  { n: "projects", g: "proj", x: 1250, y: 20, why: "A customer project run by one team, with its project manager and status. Its plan is in project_items.",
+    f: [["id", "PK", ""], ["team_id", "FK", "→ teams.id"], ["client", "", "→ clients.name"], ["name", "", ""], ["description", "", ""],
+        ["pm_person_id", "FK", "→ people.id (PM)"], ["start_date", "", "day 1 of the plan"], ["status", "", "Planned…Cancelled"],
+        ["created_by", "user", ""], ["created_at / updated_at", "", ""]] },
+  { n: "project_items", g: "proj", x: 1250, y: 300, why: "The plan: phases, and the activities and milestones inside them, scheduled in working days from the start date.",
+    f: [["id", "PK", ""], ["project_id", "FK", "→ projects.id"], ["parent_id", "FK", "→ phase (empty = phase)"], ["seq", "", "order"],
+        ["kind", "", "phase · activity · milestone"], ["name", "", ""], ["deliverable", "", "phases"], ["owner", "", "e.g. Affin / Xmeg"],
+        ["start_day / end_day", "", "working days"], ["status", "", "Not Started…At Risk"], ["remarks", "", ""]] },
+  { n: "project_holidays", g: "proj", x: 1250, y: 640, why: "Each project's own public holidays, skipped when working days are turned into dates (customers can be overseas).",
+    f: [["project_id", "PK", "→ projects.id"], ["date", "PK", ""], ["name", "", ""]] },
   { n: "users", g: "id", x: 20, y: 20, why: "One login per person, valid across all teams. Holds the password hash and the administrator flag.",
     f: [["id", "PK", ""], ["login", "UQ", "case-insensitive"], ["display_name", "", ""], ["pw_hash", "", "salted hash"], ["is_admin", "", "0 / 1, all teams"], ["disabled", "", "0 / 1"], ["created_at", "", ""]] },
   { n: "sessions", g: "id", x: 20, y: 300, why: "A signed-in browser. Only the hash of the cookie token is stored. Deleted with the user.",
@@ -15,14 +28,14 @@ const ERD_TABLES = [
   { n: "teams", g: "team", x: 430, y: 20, why: "A team, such as Team A. Its own lists and KPI settings are stored on this row as JSON.",
     f: [["id", "PK", "slug, e.g. team-a"], ["name", "", ""], ["categories", "JSON", "Pre-Sales, Project…"], ["customers", "JSON", "Affin, RHB…"], ["kpi", "JSON", "KPI weights"], ["created_at", "", ""], ["archive_days", "", "empty = server default"]] },
   { n: "people", g: "team", x: 430, y: 290, why: "A person's membership of one team and their role there. Can exist without a login (imported names); user_id links the login later.",
-    f: [["id", "PK", ""], ["team_id", "FK", "→ teams.id"], ["key", "UQ", "unique per team"], ["name", "", ""], ["role", "", "lead · member"], ["user_id", "FK", "→ users.id, optional"], ["active", "", "0 / 1"], ["created_at", "", ""]] },
+    f: [["id", "PK", ""], ["team_id", "FK", "→ teams.id"], ["key", "UQ", "unique per team"], ["name", "", ""], ["role", "", "lead · member"], ["user_id", "FK", "→ users.id, optional"], ["active", "", "0 / 1"], ["created_at", "", ""], ["is_pm", "", "1 = Project Manager"]] },
   { n: "customer_logos", g: "team", x: 430, y: 560, why: "Optional logo for a customer, shown as a small icon beside the customer's name. Without one, the tracker shows the customer's initials.",
     f: [["id", "PK", ""], ["team_id", "FK", "→ teams.id"], ["name", "UQ", "customer name, per team"], ["png", "", "64 × 64 PNG image"], ["updated_by", "user", ""], ["updated_at", "", ""]] },
   { n: "tasks", g: "work", x: 840, y: 20, why: "The daily task tracker rows. Task no is unique within a team. Status and archive state are calculated from the dates.",
-    f: [["id", "PK", ""], ["team_id", "FK", "→ teams.id"], ["no", "UQ", "unique per team"], ["category", "", ""], ["title", "", "main task / project"], ["progress", "", "free text"], ["percent", "", "0–100"], ["urgency", "", "Low…Critical"], ["customer", "", ""], ["lead", "JSON", "[people.key]"], ["support", "JSON", "[people.key]"], ["start_date", "", ""], ["requested_target", "", "member's date"], ["target", "", "lead-approved date"], ["target_set_by / _at", "user", ""], ["actual_date", "", "completed"], ["created_by / _at", "user", ""], ["updated_by / _at", "user", ""], ["approved, imported", "", "0 / 1"]] },
-  { n: "change_requests", g: "work", x: 840, y: 522, why: "Changes waiting for the team lead: a new target date or a backdated completion. Holds the proposed values and the decision.",
+    f: [["id", "PK", ""], ["team_id", "FK", "→ teams.id"], ["no", "UQ", "unique per team"], ["category", "", ""], ["title", "", "main task / project"], ["progress", "", "free text"], ["percent", "", "0–100"], ["urgency", "", "Low…Critical"], ["customer", "", ""], ["lead", "JSON", "[people.key]"], ["support", "JSON", "[people.key]"], ["start_date", "", ""], ["requested_target", "", "member's date"], ["target", "", "lead-approved date"], ["target_set_by / _at", "user", ""], ["actual_date", "", "completed"], ["created_by / _at", "user", ""], ["updated_by / _at", "user", ""], ["approved, imported", "", "0 / 1"], ["project_id", "FK", "→ projects.id, optional"], ["project_item_id", "FK", "→ project_items.id"]] },
+  { n: "change_requests", g: "work", x: 840, y: 566, why: "Changes waiting for the team lead: a new target date or a backdated completion. Holds the proposed values and the decision.",
     f: [["id", "PK", ""], ["task_id", "", "→ tasks.id, no FK"], ["team_id", "FK", "→ teams.id"], ["kind", "", "create · edit"], ["data", "JSON", "proposed fields"], ["by_user", "user", "who asked"], ["at", "", ""], ["status", "", "pending · approved · rejected"], ["note", "", "lead's reason"], ["decided_by / _at", "user", ""]] },
-  { n: "task_log", g: "work", x: 840, y: 812, why: "Change history. One row per create or edit, listing which fields changed from what to what.",
+  { n: "task_log", g: "work", x: 840, y: 856, why: "Change history. One row per create or edit, listing which fields changed from what to what.",
     f: [["id", "PK", ""], ["task_id", "FK", "→ tasks.id"], ["at", "", "timestamp"], ["user_id", "user", "empty = import"], ["kind", "", "create · edit"], ["changes", "JSON", "[field, old, new]"]] },
 ];
 // from (the "1" side) → to (the "many" side); via = x of the vertical segment
@@ -37,6 +50,9 @@ const ERD_LINKS = [
   { a: ["teams", "name", "r"], b: ["change_requests", "team_id", "l"], via: 772, la: "1", lb: "N" },
   { a: ["tasks", "bottom"], b: ["change_requests", "top"], la: "1", lb: "N", soft: true },
   { a: ["tasks", "id", "r"], b: ["task_log", "task_id", "r"], via: 1172, la: "1", lb: "N" },
+  { a: ["projects", "id", "l"], b: ["tasks", "project_id", "r"], via: 1212, la: "1", lb: "N" },
+  { a: ["projects", "bottom"], b: ["project_items", "top"], la: "1", lb: "N" },
+  { a: ["projects", "id", "r"], b: ["project_holidays", "project_id", "r"], via: 1584, la: "1", lb: "N" },
   { a: ["people", "key", "r"], b: ["tasks", "lead", "l"], via: 806, la: "key", lb: "lead, support", soft: true },
 ];
 function erdSvg(onPick) {
@@ -53,7 +69,7 @@ function erdSvg(onPick) {
   const el = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.append(e); return e; };
   const txt = (s, attrs, parent) => { const e = el("text", attrs, parent); e.textContent = s; return e; };
   const maxY = Math.max(...T.map(t => t.y + t.h)) + 16;
-  const svg = el("svg", { class: "erd", viewBox: "0 0 1180 " + maxY, role: "img", "aria-label": "Database tables and how they connect" });
+  const svg = el("svg", { class: "erd", viewBox: "0 0 1590 " + maxY, role: "img", "aria-label": "Database tables and how they connect" });
   const root = el("g", { transform: "translate(0,8)" }, svg);
   const rel = el("g", {}, root);
   for (const r of ERD_LINKS) {
@@ -102,7 +118,7 @@ function helpModel() {
     Object.values(ERD_GROUPS).map(([label, cls]) => h("span", {}, h("i", { class: "sw " + cls }), label)),
     h("span", {}, h("i", { class: "ln" }), "Foreign key in the database"), h("span", {}, h("i", { class: "ln soft" }), "Link kept by the code only"));
   return h("div", { class: "help-model" },
-    h("p", { class: "muted m0" }, "How the tracker stores its data: nine tables in one SQLite file (", C("/data/tracker.db"), "). Logins on the left, teams and their people in the middle, the work on the right. Click a table for its details."),
+    h("p", { class: "muted m0" }, "How the tracker stores its data: thirteen tables in one SQLite file (", C("/data/tracker.db"), "). Logins on the left, teams and their people in the middle, the work on the right. Click a table for its details."),
     h("div", { class: "panel help-fig" }, legend, h("div", { class: "tscroll" }, erdSvg(pick))),
     h("div", { class: "help-points" },
       h("div", {}, h("h3", { text: "A login is not a team member" }), P(C("users"), " is one account per person. ", C("people"), " is one row per person per team, with their role there, so one login can lead one team and be a member of another. Administrator is a flag on ", C("users"), ".")),
@@ -221,11 +237,11 @@ const ARCH_BOXES = [
   { id: "server", kind: "box", x: 322, y: 210, w: 330, h: 384, title: "server.py · web server and API", lines: [
     "Python standard library HTTP server", "Security headers, CSP, CSRF check", "Log-in sessions (cookie → sessions table)", "Role checks: member · lead · admin",
     "/api/login · /api/invite/*: accounts", "/api/teams/*: teams and people", "/api/tasks/*: tasks and history", "/api/requests/*: lead approvals",
-    "/api/teams/*/kpi: KPI dashboard", "/api/teams/*/export.xlsx: Excel", "/api/admin/*: administrators", "/api/help/*: admin help, README", "Serves /, app.js, help.js, app.css"] },
+    "/api/teams/*/kpi: KPI dashboard", "/api/teams/*/export.xlsx: Excel", "/api/admin/*: administrators", "/api/help/*: admin help, README", "/api/projects/*: projects and plans", "Serves /, app.js, help.js, projects.js"] },
   { id: "xlsx", kind: "box", x: 672, y: 210, w: 226, h: 84, title: "xlsx.py", lines: ["Writes the Excel export", "(no external packages)"] },
   { id: "import", kind: "box", x: 672, y: 314, w: 226, h: 96, title: "xlsm_import.py", lines: ["Reads the 2026 workbook", "Daily Task Tracker + Archive", "Macros are never run"] },
   { id: "cli", kind: "box", x: 672, y: 440, w: 226, h: 154, title: "Admin commands", lines: ["python server.py …", "admin-link · backup", "import-xlsm · sync-xlsm", "make-admin · invite-admin", "run with podman exec"] },
-  { id: "volume", kind: "store", x: 306, y: 650, w: 608, h: 84, title: "Volume tracker-data → /data", lines: ["tracker.db: SQLite database (WAL), 9 tables: see Data model", "backup.db and copied-in workbooks (temporary)"] },
+  { id: "volume", kind: "store", x: 306, y: 650, w: 608, h: 84, title: "Volume tracker-data → /data", lines: ["tracker.db: SQLite database (WAL), 13 tables: see Data model", "backup.db and copied-in workbooks (temporary)"] },
   { id: "github", kind: "ext", x: 950, y: 44, w: 214, h: 106, title: "GitHub", lines: ["actionkamer90/Team-A-Task", "git pull on the server,", "then podman build"] },
   { id: "ssh", kind: "ext", x: 950, y: 460, w: 214, h: 106, title: "Administrator's SSH", lines: ["root on ddtaskserver", "runs admin commands", "with podman exec"] },
   { id: "workbook", kind: "ext", x: 950, y: 640, w: 214, h: 106, title: "Excel workbook", lines: ["Team's .xlsm file", "copied in with podman cp", "for import or sync"] },
@@ -291,10 +307,11 @@ function helpArch() {
     helpTable(["Component", "What it does", "Where"], [
       row("Browser app", "All screens: tracker, archive, approvals, KPI, team, help. Only shows what your role allows; the server enforces it.", "app/static/app.js, help.js"),
       row("Admin help", "Data model, Architecture and Setup guide. Sent only to administrators.", "app/static/help_admin.js"),
+      row("Projects screens", "Project list, project page with the Gantt timeline, plan editor and holidays.", "app/static/projects.js"),
       row("Web server and API", "Serves the pages, checks log-ins and roles, reads and writes the database, works out statuses and KPI.", "app/server.py"),
       row("Excel export", "Builds the .xlsx download.", "app/xlsx.py"),
       row("Workbook import", "Reads a team's 2026 Daily Task Tracker workbook for import-xlsm and sync-xlsm.", "app/xlsm_import.py"),
-      row("Database", "SQLite file with 9 tables, including customer logos. See Data model.", "/data/tracker.db (volume tracker-data)"),
+      row("Database", "SQLite file with 13 tables, including clients, projects and their plans. See Data model.", "/data/tracker.db (volume tracker-data)"),
       row("Service", "Starts the container on boot and restarts it if it stops.", "/etc/containers/systemd/team-task-tracker.container"),
       row("Image recipe", "How podman build makes the container image.", "Dockerfile"),
     ]));
