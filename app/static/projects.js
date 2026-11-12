@@ -415,10 +415,6 @@ function taskSpan(t) {
   const start = t.startDate || S.today, end = t.effTarget && t.effTarget > S.today ? t.effTarget : S.today;
   return [start < end ? start : end, end];
 }
-function loadPill(n) {
-  const [, cls, word] = loadLevel(n);
-  return h("span", { class: "pill " + cls, title: n + " open task" + (n === 1 ? "" : "s") + " in total (every project, tickets and other work)", text: n + (word ? " · " + word : "") });
-}
 function loadSummary(key) {
   const open = openTasksOf(key), soon = isoAdd(S.today, 7);
   const thisWeek = open.filter(t => t.effTarget && t.effTarget >= S.today && t.effTarget <= soon).length;
@@ -436,14 +432,14 @@ function projectTeam(pr) {
     const mine = pr.tasks.filter(t => t.lead.includes(k) || t.support.includes(k)), open = mine.filter(t => !t.actualDate);
     return { k, open: open.length, overdue: open.filter(t => t.target && t.target < S.today).length,
       soon: open.filter(t => t.target && t.target >= S.today && t.target <= soon).length, done: mine.length - open.length,
-      on: [...new Set(open.map(t => names[t.itemId]).filter(Boolean))], all: openTasksOf(k).length };
+      on: [...new Set(open.map(t => names[t.itemId]).filter(Boolean))] };
   }).sort((a, b) => b.open - a.open || personName(a.k).localeCompare(personName(b.k)));
   return h("div", { class: "tscroll" }, h("table", {},
-    h("thead", {}, h("tr", {}, [["Engineer"], ["Open", "num"], ["Overdue", "num"], ["Due in 2 weeks", "num"], ["Done", "num"], ["Working on"], ["All open tasks", "num"]].map(([c, cl]) => h("th", { class: cl || "", text: c })))),
+    h("thead", {}, h("tr", {}, [["Engineer"], ["Open", "num"], ["Overdue", "num"], ["Due in 2 weeks", "num"], ["Done", "num"], ["Working on"]].map(([c, cl]) => h("th", { class: cl || "", text: c })))),
     h("tbody", {}, rows.map(r => h("tr", {},
       h("td", { class: "nowrap" }, h("b", { text: personName(r.k) })), h("td", { class: "num mono", text: r.open }),
       h("td", { class: "num mono" + (r.overdue ? " bad-text" : ""), text: r.overdue }), h("td", { class: "num mono", text: r.soon }), h("td", { class: "num mono", text: r.done }),
-      h("td", { class: "small", title: r.on.join("\n"), text: (r.on.slice(0, 4).join(" · ") + (r.on.length > 4 ? " · + " + (r.on.length - 4) + " more" : "")) || "—" }), h("td", { class: "num" }, loadPill(r.all)))))));
+      h("td", { class: "small", title: r.on.join("\n"), text: (r.on.slice(0, 4).join(" · ") + (r.on.length > 4 ? " · + " + (r.on.length - 4) + " more" : "")) || "—" }))))));
 }
 
 /* 2b. Team load: engineers × this week and the next 7 */
