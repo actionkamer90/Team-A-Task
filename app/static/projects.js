@@ -464,28 +464,31 @@ function teamLoad() {
       grid.append(h("div", { class: "n", text: p.name }));
       for (let i = 0; i < cols; i++) {
         const list = cell(p.key, i), [, cls] = loadLevel(list.length), on = picked && picked.k === p.key && picked.i === i;
-        grid.append(h("button", { class: "c l-" + (cls || "none") + (on ? " on" : "") + (i === weeks.length ? " later" : ""), type: "button", text: String(list.length),
-          "aria-label": p.name + ", " + colName(i) + ": " + list.length + " open tasks", "aria-pressed": on ? "true" : "false",
-          onclick: () => { picked = S.loadPick = on ? null : { k: p.key, i }; draw(); } }));
+        const L = list.filter(t => t.lead.includes(p.key)).length, Su = list.length - L;  // as lead engineer / as support
+        grid.append(h("button", { class: "c l-" + (cls || "none") + (on ? " on" : "") + (i === weeks.length ? " later" : ""), type: "button",
+          "aria-label": p.name + ", " + colName(i) + ": " + list.length + " open tasks (" + L + " as lead, " + Su + " as support)", "aria-pressed": on ? "true" : "false",
+          onclick: () => { picked = S.loadPick = on ? null : { k: p.key, i }; draw(); } },
+          list.length ? [h("b", { text: String(list.length) }), h("small", { text: "L " + L + " · S " + Su })] : h("span", { class: "z", text: "–" })));
       }
     });
     if (!picked || picked.i >= cols) return detail.replaceChildren();
-    const list = cell(picked.k, picked.i).sort((a, b) => (a.effTarget || "0000").localeCompare(b.effTarget || "0000"));
+    const list = cell(picked.k, picked.i).sort((a, b) => (b.lead.includes(picked.k) - a.lead.includes(picked.k)) || (a.effTarget || "0000").localeCompare(b.effTarget || "0000"));
     detail.replaceChildren(h("div", { class: "tscroll" }, h("table", {},
-      h("thead", {}, h("tr", {}, h("th", { colspan: "5", text: personName(picked.k) + " · " + colName(picked.i) + " · " + list.length + " task" + (list.length === 1 ? "" : "s") }))),
+      h("thead", {}, h("tr", {}, h("th", { colspan: "6", text: personName(picked.k) + " · " + colName(picked.i) + " · " + list.length + " task" + (list.length === 1 ? "" : "s") }))),
       h("tbody", {}, list.length ? list.map(t => h("tr", { class: "click", onclick: () => taskSheet(t) },
         h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }),
+        h("td", {}, t.lead.includes(picked.k) ? h("span", { class: "pill info", text: "Lead" }) : h("span", { class: "pill", text: "Support" })),
         h("td", {}, h("div", { text: t.projectName ? t.projectName + (t.projectItemName ? " › " + t.projectItemName : "") : t.title }), t.projectName && t.title !== t.projectName ? h("div", { class: "muted small", text: t.title }) : null),
         h("td", { class: "mono nowrap", text: fmt(t.effTarget) }), h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status })),
         h("td", { class: "muted small", text: (t.customer || "") + (t.projectName ? "" : " (no project)") }))) :
-        h("tr", {}, h("td", { colspan: "5", class: "muted", text: "Nothing due." }))))));
+        h("tr", {}, h("td", { colspan: "6", class: "muted", text: "Nothing due." }))))));
   };
   draw();
   return h("div", { class: "panel" },
     h("div", { class: "row between" }, h("h3", { text: "Team load: open tasks by delivery week" }),
       h("div", { class: "pj-load-legend" }, h("span", {}, h("i", { class: "l-none" }), "0"), h("span", {}, h("i", { class: "l-ok" }), "1–3 tasks"),
         h("span", {}, h("i", { class: "l-warn" }), "4–6"), h("span", {}, h("i", { class: "l-bad" }), "7 or more"))),
-    h("p", { class: "muted small m0", text: "Each open daily task counts once, in the week of its target date (lead or support engineer, on projects and off them). This week also holds overdue tasks and tasks with no target date. Later is anything due after these 8 weeks. Click a number to see the tasks." }),
+    h("p", { class: "muted small m0", text: "Each open daily task counts once, in the week of its target date, on projects and off them. L = as lead engineer, S = as support. This week also holds overdue tasks and tasks with no target date. Later is anything due after these 8 weeks. Click a number to see the tasks." }),
     h("div", { class: "tscroll pj-load-wrap" }, grid), detail);
 }
 

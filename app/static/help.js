@@ -135,7 +135,7 @@ function helpGuide(isAdmin) {
         ])),
       sec("summary", "Summary",
         P("Task load by engineer (open tasks, as lead or support) and open tasks by customer. Useful for spreading work in the morning stand-up."),
-        P(B("Team load by delivery week: "), "each engineer against this week, the next 7 weeks and Later: every open daily task counts once, in the week of its target date. This week also holds overdue tasks and tasks with no target date. Green 1–3, amber 4–6, red 7 or more. Click a number to see those tasks.")),
+        P(B("Team load by delivery week: "), "each engineer against this week, the next 7 weeks and Later: every open daily task counts once, in the week of its target date. Under each number, L is how many of them the engineer leads and S how many they support. This week also holds overdue tasks and tasks with no target date. Green 1–3, amber 4–6, red 7 or more. Click a number to see those tasks.")),
       sec("kpi", "KPI Dashboard (team leads)",
         P("Scores each engineer on tasks completed in the chosen period:"),
         P(B("KPI = On-time % × 80% + Early % × 20%")),

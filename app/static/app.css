@@ -369,7 +369,10 @@ tr.pj-hl td{background:var(--accent-soft)}
 .pj-load{display:grid;gap:3px;font-size:12px;min-width:560px}
 .pj-load .h{color:var(--muted);font-weight:600;font-size:11px;text-align:center;padding:4px 2px;white-space:nowrap}
 .pj-load .n{font-weight:600;padding:6px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pj-load .c{border:0;border-radius:4px;padding:6px 2px;font:inherit;font-family:var(--f-mono);cursor:pointer;color:inherit}
+.pj-load .c{border:0;border-radius:4px;padding:4px 2px;font:inherit;font-family:var(--f-mono);cursor:pointer;color:inherit;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.2;min-height:38px}
+.pj-load .c b{font-size:14px;font-weight:600}
+.pj-load .c small{font-size:10px;opacity:.85;white-space:nowrap}
+.pj-load .c .z{opacity:.5}
 .pj-load .c.on{outline:2px solid var(--accent);outline-offset:1px}
 .l-none{background:var(--surface-2);color:var(--muted)!important} .l-ok{background:var(--ok-soft);color:var(--ok)!important}
 .l-warn{background:var(--warn-soft);color:var(--warn)!important} .l-bad{background:var(--bad-soft);color:var(--bad)!important}
