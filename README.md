@@ -35,7 +35,7 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
   projects, run the plans of projects they manage, assign their activities to engineers (*+ Assign* creates the
   daily task) and update those tasks.
 - **Team load.** Each project page lists who works on it and their tasks on that project; the Summary tab shows every
-  engineer's open tasks for this week and the next 7.
+  engineer's open tasks by the week they are due (this week, the next 7, and later).
 - **Clients (team leads and administrators).** Every client with a short name (e.g. RHB) and full name
   (e.g. RHB Bank Bhd): add a client, tick which teams work with it, and upload its logo once for those teams.
   Team leads see their own teams only.

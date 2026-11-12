@@ -377,3 +377,4 @@ tr.pj-hl td{background:var(--accent-soft)}
 .pj-load-legend i{display:inline-block;width:14px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}
 .pj-assign{text-decoration:none;font-weight:600} .pj-assign:hover{text-decoration:underline}
 .pj-tcell{flex-direction:row!important;flex-wrap:wrap;align-items:center!important;column-gap:12px!important}
+.pj-load .c.later{opacity:.8}
