@@ -32,7 +32,10 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
   template (an implementation project) pre-fills the plan. Daily tasks can name a project and one of its
   activities; the task's target date is then the activity's end date, locked, and it moves when the plan changes. *Export to Excel* writes the plan in the team's timeline layout (values only).
 - **Project Manager role.** A team lead makes a member a Project Manager on *Team & Invites*; they can create
-  projects and run the plans of projects they manage.
+  projects, run the plans of projects they manage, assign their activities to engineers (*+ Assign* creates the
+  daily task) and update those tasks.
+- **Team load.** Each project page lists who works on it and how loaded they are; the Projects tab shows every
+  engineer's open tasks for this week and the next 7 (leads and Project Managers).
 - **Clients (team leads and administrators).** Every client with a short name (e.g. RHB) and full name
   (e.g. RHB Bank Bhd): add a client, tick which teams work with it, and upload its logo once for those teams.
   Team leads see their own teams only.

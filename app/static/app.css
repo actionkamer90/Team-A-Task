@@ -356,3 +356,24 @@ tr.pj-ready td{box-shadow:inset 0 0 0 9999px rgba(46,160,90,.08)}
 .pager select{width:auto}
 .pj-sec{margin:18px 0 8px;font-size:15px}
 tr.pj-task-done td{color:var(--muted)}
+/* project team, assigning and team load */
+.pj-tcell{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+.pj-tcount{text-decoration:underline dotted;color:var(--accent)} .pj-tcount.ok-text{color:var(--ok)}
+tr.pj-open>td{border-bottom-color:transparent}
+tr.pj-sub>td{background:var(--accent-soft);padding-top:4px;padding-bottom:8px}
+.pj-subtable{background:transparent;width:100%} .pj-subtable td{border-bottom:1px solid var(--line);font-size:12.5px;vertical-align:middle} .pj-subtable tr:last-child td{border-bottom:0}
+.pj-note{color:var(--muted);font-size:12px;min-width:260px}
+tr.pj-hl td{background:var(--accent-soft)}
+.pj-gantt .pj-od-t{fill:var(--muted);font-weight:400}
+.pj-load-wrap{padding:8px;border:0}
+.pj-load{display:grid;gap:3px;font-size:12px;min-width:560px}
+.pj-load .h{color:var(--muted);font-weight:600;font-size:11px;text-align:center;padding:4px 2px;white-space:nowrap}
+.pj-load .n{font-weight:600;padding:6px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pj-load .c{border:0;border-radius:4px;padding:6px 2px;font:inherit;font-family:var(--f-mono);cursor:pointer;color:inherit}
+.pj-load .c.on{outline:2px solid var(--accent);outline-offset:1px}
+.l-none{background:var(--surface-2);color:var(--muted)!important} .l-ok{background:var(--ok-soft);color:var(--ok)!important}
+.l-warn{background:var(--warn-soft);color:var(--warn)!important} .l-bad{background:var(--bad-soft);color:var(--bad)!important}
+.pj-load-legend{display:flex;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.pj-load-legend i{display:inline-block;width:14px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}
+.pj-assign{text-decoration:none;font-weight:600} .pj-assign:hover{text-decoration:underline}
+.pj-tcell{flex-direction:row!important;flex-wrap:wrap;align-items:center!important;column-gap:12px!important}

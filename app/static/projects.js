@@ -72,6 +72,7 @@ function viewProjects(main) {
     draw();
     return box;
   };
+  if (isLead() || team()?.isPm) main.append(teamLoad());
   main.append(h("h3", { class: "pj-sec", text: "Running projects (" + running.length + ")" }),
     section(running, R, "Running project pages", "No running projects. Completed and cancelled projects are listed below."));
   if (closed.length) main.append(h("h3", { class: "pj-sec", text: "Completed and cancelled (" + closed.length + ")" }),
@@ -118,6 +119,8 @@ function projectPage(main, id) {
   const box = h("div", { class: "pj-page" }, h("p", { class: "muted", text: "Loading the project…" }));
   main.append(h("div", {}, h("button", { class: "linkbtn", text: "← All projects", onclick: () => { S.projectId = null; render(); } })), box);
   let pr = null, editing = false, draft = null;
+  const openItems = new Set();  // activities whose daily tasks are shown in the Plan (and highlighted below)
+  const ui = { open: openItems, toggle: it => { openItems.has(it.id) ? openItems.delete(it.id) : openItems.add(it.id); draw(); }, assign: null };
   const load = async () => {
     try { pr = await api("GET", "/api/projects/" + id); draw(); }
     catch (e) { box.replaceChildren(h("p", { class: "bad-text", text: e.status === 404 ? "This project no longer exists." : e.message })); }
@@ -141,8 +144,9 @@ function projectPage(main, id) {
       h("div", { class: "panel pj-gantt-panel" }, h("div", { class: "row between" }, h("h3", { text: "Timeline" }), ganttLegend()), gantt(pr)),
       h("div", { class: "panel" }, h("div", { class: "row between" }, h("h3", { text: "Plan" }),
         pr.canEdit ? h("span", { class: "muted small", text: "Change an activity's status here; phases follow their activities." }) : null),
-        readyNote(), planTable(pr, pr.canEdit ? setStatus : null)),
-      h("div", { class: "panel" }, h("h3", { text: "Daily tasks linked to this project" }), linkedTasks(pr)),
+        readyNote(), planTable(pr, pr.canEdit ? setStatus : null, Object.assign(ui, { assign: pr.canEdit && pr.status !== "Completed" && pr.status !== "Cancelled" ? it => assignSheet(pr, it, load) : null }))),
+      h("div", { class: "panel" }, h("div", { class: "row between" }, h("h3", { text: "Team on this project" }), h("span", { class: "muted small", text: "From the daily tasks linked to this project" })), projectTeam(pr)),
+      h("div", { class: "panel" }, h("h3", { text: "Daily tasks linked to this project" }), linkedTasks(pr, openItems)),
       pr.holidays.length ? h("p", { class: "muted small m0", text: "Public holidays skipped in this plan: " + pr.holidays.map(x => fmt(x.date) + " " + x.name).join(" · ") }) :
         h("p", { class: "muted small m0", text: "No public holidays registered for this project yet. Add them in Edit plan → Public holidays." }));
   };
@@ -258,7 +262,9 @@ async function deleteProject(pr) {
 }
 
 /* ---------- read-only plan and linked tasks ---------- */
-function planTable(pr, setStatus) {
+function planTable(pr, setStatus, ui) {
+  // ui: {open: Set of item ids whose daily tasks are shown, toggle(it), assign(it)}
+  ui = ui || { open: new Set(), toggle() { }, assign: null };
   const rows = [];
   // status: a dropdown for the lead / project manager, a pill for everyone else
   const statusCell = (it, isPh) => {
@@ -268,44 +274,67 @@ function planTable(pr, setStatus) {
       ["Not Started", "In Progress", "Completed", "At Risk"].map(v => h("option", { value: v, text: v, selected: v === it.status })));
     return h("td", {}, h("div", { class: "pj-status-cell" }, sel, od));
   };
-  // linked daily tasks: "1 / 2 tasks done"; when all are done and the activity isn't, offer to mark it completed
+  // linked daily tasks: "1 / 2 tasks done" opens them under the row; all done → offer to mark the activity completed
   const tasksCell = it => {
     const bits = [];
     if (it.remarks) bits.push(h("div", { class: "small", text: it.remarks }));
     if (it.tasks) {
-      const all = it.tasksDone === it.tasks;
-      bits.push(h("div", { class: "small " + (all ? "ok-text" : "muted"), text: it.tasksDone + " / " + it.tasks + " linked task" + (it.tasks === 1 ? "" : "s") + " done" }));
+      const all = it.tasksDone === it.tasks, open = ui.open.has(it.id);
+      bits.push(h("button", { class: "linkbtn small pj-tcount " + (all ? "ok-text" : ""), "aria-expanded": open ? "true" : "false",
+        title: "Show these daily tasks and their latest progress",
+        text: it.tasksDone + " / " + it.tasks + " task" + (it.tasks === 1 ? "" : "s") + " done " + (open ? "▴" : "▾"), onclick: () => ui.toggle(it) }));
       if (all && it.status !== "Completed" && setStatus)
         bits.push(h("button", { class: "btn small pj-markdone", text: "✓ Mark completed", onclick: e => setStatus(it, "Completed", e.target) }));
     }
-    return h("td", {}, bits);
+    if (ui.assign && it.status !== "Completed")
+      bits.push(h("button", { class: "linkbtn small pj-assign", text: "+ Assign", "aria-label": "Assign " + it.name + " to an engineer", title: "Create a daily task for an engineer on this activity", onclick: () => ui.assign(it) }));
+    return h("td", {}, h("div", { class: "pj-tcell" }, bits));
   };
+  // the daily tasks of one activity, with their latest progress line
+  const taskRows = it => h("tr", { class: "pj-sub" }, h("td"), h("td", { colspan: "8" },
+    h("table", { class: "pj-subtable" }, h("tbody", {}, pr.tasks.filter(t => t.itemId === it.id)
+      .sort((a, b) => (!!a.actualDate - !!b.actualDate) || (a.target || "9999").localeCompare(b.target || "9999"))
+      .map(t => h("tr", {},
+        h("td", { class: "mono muted nowrap", text: "#" + String(t.no).padStart(3, "0") }),
+        h("td", { class: "nowrap" }, h("b", { text: t.lead.map(personName).join(" / ") }), t.support.length ? h("span", { class: "muted", text: " + " + t.support.map(personName).join(", ") }) : null),
+        h("td", { class: "mono nowrap", text: fmt(t.target) }),
+        h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status })),
+        h("td", { class: "pj-note", text: t.lastNote || "No progress written yet." }),
+        h("td", { class: "num" }, h("button", { class: "btn small", text: "Open", onclick: () => { const x = S.tasks.find(y => y.id === t.id); if (x) taskSheet(x); } }))))))));
   pr.phases.forEach((ph, pi) => {
-    const r = (no, it, type, isPh) => h("tr", { class: (isPh ? "pj-phase-row" : "") + (!isPh && it.tasks && it.tasksDone === it.tasks && it.status !== "Completed" ? " pj-ready" : "") },
+    const r = (no, it, type, isPh) => h("tr", { class: (isPh ? "pj-phase-row" : "") + (!isPh && it.tasks && it.tasksDone === it.tasks && it.status !== "Completed" ? " pj-ready" : "") + (ui.open.has(it.id) ? " pj-open" : "") },
       h("td", { class: "mono" + (isPh ? "" : " muted"), text: no }), h("td", { text: (type === "Milestone" ? "◆ " : "") + it.name }), h("td", { class: "muted small", text: type }),
       h("td", { class: "small nowrap", text: weeksLabel(it.startDay, it.endDay) }), h("td", { class: "mono nowrap", text: fmt(it.startDate) }), h("td", { class: "mono nowrap", text: fmt(it.endDate) }),
       h("td", { class: "small", text: isPh ? it.deliverable : it.owner }),
       statusCell(it, isPh),
       isPh ? h("td", { class: "small", text: it.remarks || "" }) : tasksCell(it));
     rows.push(r(String(pi + 1), ph, "Phase", true));
-    ph.items.forEach((it, ki) => rows.push(r((pi + 1) + "." + (ki + 1), it, it.kind === "milestone" ? "Milestone" : "Activity", false)));
+    ph.items.forEach((it, ki) => {
+      rows.push(r((pi + 1) + "." + (ki + 1), it, it.kind === "milestone" ? "Milestone" : "Activity", false));
+      if (ui.open.has(it.id) && it.tasks) rows.push(taskRows(it));
+    });
   });
   if (!rows.length) return h("p", { class: "muted", text: "This plan is empty." + (pr.canEdit ? " Use Edit plan to add phases and activities." : "") });
   return h("div", { class: "tscroll" }, h("table", { class: "pj-plan-table" }, h("thead", {}, h("tr", {}, ["No", "Phase / activity", "Type", "Weeks", "Start", "End", "Owner / deliverable", "Status", "Remarks / daily tasks"].map(c => h("th", { text: c })))), h("tbody", {}, rows)));
 }
-function linkedTasks(pr) {
+function linkedTasks(pr, hl) {
+  hl = hl || new Set();
   if (!pr.tasks.length) return h("p", { class: "muted m0", text: "No daily tasks are linked yet. When someone adds a task, they pick this project and its activity on the task form." });
   const names = {}; pr.phases.forEach(ph => { names[ph.id] = ph.name; ph.items.forEach(it => { names[it.id] = it.name; }); });
   // open tasks first, nearest target date first (no target at the end of them); completed tasks at the bottom
   const list = pr.tasks.slice().sort((a, b) => (!!a.actualDate - !!b.actualDate) || (a.target || "9999").localeCompare(b.target || "9999") || a.no - b.no);
   const A = S.pjTaskPage && S.pjTaskPage.id === pr.id ? S.pjTaskPage : (S.pjTaskPage = { id: pr.id, page: 1, size: 10 });
   const box = h("div");
+  // opening an activity's tasks in the Plan highlights them here, on the page where the first one is
+  const hlKey = [...hl].join(",");
+  if (hlKey && A.hl !== hlKey) { const i = list.findIndex(t => hl.has(t.itemId)); if (i >= 0) A.page = Math.floor(i / A.size) + 1; }
+  A.hl = hlKey;
   const draw = () => {
     const pages = Math.max(1, Math.ceil(list.length / A.size));
     A.page = Math.min(Math.max(1, A.page), pages);
     const rows = list.slice((A.page - 1) * A.size, A.page * A.size);
     box.replaceChildren(...[h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["No", "Task", "Activity", "Lead", "Target", "Completed", "Status"].map(c => h("th", { text: c })))),
-      h("tbody", {}, rows.map(t => h("tr", { class: "click" + (t.actualDate ? " pj-task-done" : ""), onclick: () => { const x = S.tasks.find(y => y.id === t.id); if (x) taskSheet(x); } },
+      h("tbody", {}, rows.map(t => h("tr", { class: "click" + (t.actualDate ? " pj-task-done" : "") + (hl.has(t.itemId) ? " pj-hl" : ""), onclick: () => { const x = S.tasks.find(y => y.id === t.id); if (x) taskSheet(x); } },
         h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }), h("td", { text: t.title }), h("td", { class: "small", text: names[t.itemId] || "—" }),
         h("td", { class: "nowrap", text: t.lead.map(personName).join(" / ") }),
         h("td", { class: "mono nowrap", text: fmt(t.target) }), h("td", { class: "mono nowrap", text: fmt(t.actualDate) }),
@@ -355,8 +384,10 @@ function gantt(pr) {
       if (r.phase) el("rect", { x: 0, y, width: w, height: RH, class: "pj-phase-bg" }, s);
       el("line", { x1: 0, x2: w, y1: y + RH, y2: y + RH, class: "pj-row" }, s);
     }
-    const label = txt((r.phase ? r.no + "  " : "    " + r.no + "  ") + (it.kind === "milestone" ? "◆ " : "") + it.name, { x: 8, y: y + 15, class: "pj-label" + (r.phase ? " phase" : "") + (it.overdue ? " od" : "") }, left);
-    if (it.name.length > 40) label.textContent = label.textContent.slice(0, 44 + (r.phase ? 0 : 4)) + "…";
+    const base = (r.phase ? r.no + "  " : "    " + r.no + "  ") + (it.kind === "milestone" ? "◆ " : ""), max = (it.overdue ? 34 : 44) + (r.phase ? 0 : 4);
+    const shown = (base + it.name).length > max ? (base + it.name).slice(0, max) + "…" : base + it.name;
+    const label = txt(shown, { x: 8, y: y + 15, class: "pj-label" + (r.phase ? " phase" : "") }, left);
+    if (it.overdue) { const od = el("tspan", { class: "pj-od-t" }, label); od.textContent = " (Overdue)"; }
     el("title", {}, label).textContent = it.name + "\n" + fmt(it.startDate) + " – " + fmt(it.endDate) + " · " + it.status + (it.overdue ? " · OVERDUE" : "");
     const x1 = (it.startDay - 1) * CW, x2 = it.endDay * CW;
     const g = el("g", { class: "pj-bar-g" }, svg);
@@ -373,4 +404,116 @@ function gantt(pr) {
   // open on the current week (a week before today), so the work in hand is in view
   if (todayX !== null) requestAnimationFrame(() => { scroller.scrollLeft = Math.max(0, todayX - CW * 5); });
   return h("div", { class: "pj-gantt-wrap" }, h("div", { class: "pj-gantt-names" }, left), scroller);
+}
+
+/* ---------- team load (from the daily tasks: lead and support engineers, open tasks) ---------- */
+const LOAD_LEVELS = [[7, "bad", "overloaded"], [4, "warn", "busy"], [1, "ok", ""], [0, "", ""]];
+function loadLevel(n) { return LOAD_LEVELS.find(([min]) => n >= min); }
+function isoAdd(iso, days) { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + days); return isoLocal(d); }
+function onTask(t, key) { return t.lead.includes(key) || t.support.includes(key); }
+function openTasksOf(key) { return S.tasks.filter(t => !t.actualDate && onTask(t, key)); }
+// the days an open task occupies: start date (today if none) to target date; overdue or no target → until today
+function taskSpan(t) {
+  const start = t.startDate || S.today, end = t.effTarget && t.effTarget > S.today ? t.effTarget : S.today;
+  return [start < end ? start : end, end];
+}
+function loadPill(n) {
+  const [, cls, word] = loadLevel(n);
+  return h("span", { class: "pill " + cls, title: n + " open task" + (n === 1 ? "" : "s") + " in total (every project, tickets and other work)", text: n + (word ? " · " + word : "") });
+}
+function loadSummary(key) {
+  const open = openTasksOf(key), soon = isoAdd(S.today, 7);
+  const thisWeek = open.filter(t => t.effTarget && t.effTarget >= S.today && t.effTarget <= soon).length;
+  return personName(key) + " already has " + open.length + " open task" + (open.length === 1 ? "" : "s") + (thisWeek ? ", " + thisWeek + " due in the next 7 days" : "") + ".";
+}
+
+/* 2a. Team on this project */
+function projectTeam(pr) {
+  const keys = new Set();
+  pr.tasks.forEach(t => [...t.lead, ...t.support].forEach(k => { if (!isOutside(k)) keys.add(k); }));
+  if (!keys.size) return h("p", { class: "muted m0", text: "No one has a task on this project yet." + (pr.canEdit ? " Use + Assign on an activity in the Plan." : "") });
+  const names = {}; pr.phases.forEach(ph => { names[ph.id] = ph.name; ph.items.forEach(it => { names[it.id] = it.name; }); });
+  const soon = isoAdd(S.today, 14);
+  const rows = [...keys].map(k => {
+    const mine = pr.tasks.filter(t => t.lead.includes(k) || t.support.includes(k)), open = mine.filter(t => !t.actualDate);
+    return { k, open: open.length, overdue: open.filter(t => t.target && t.target < S.today).length,
+      soon: open.filter(t => t.target && t.target >= S.today && t.target <= soon).length, done: mine.length - open.length,
+      on: [...new Set(open.map(t => names[t.itemId]).filter(Boolean))], all: openTasksOf(k).length };
+  }).sort((a, b) => b.open - a.open || personName(a.k).localeCompare(personName(b.k)));
+  return h("div", { class: "tscroll" }, h("table", {},
+    h("thead", {}, h("tr", {}, [["Engineer"], ["Open", "num"], ["Overdue", "num"], ["Due in 2 weeks", "num"], ["Done", "num"], ["Working on"], ["All open tasks", "num"]].map(([c, cl]) => h("th", { class: cl || "", text: c })))),
+    h("tbody", {}, rows.map(r => h("tr", {},
+      h("td", { class: "nowrap" }, h("b", { text: personName(r.k) })), h("td", { class: "num mono", text: r.open }),
+      h("td", { class: "num mono" + (r.overdue ? " bad-text" : ""), text: r.overdue }), h("td", { class: "num mono", text: r.soon }), h("td", { class: "num mono", text: r.done }),
+      h("td", { class: "small", title: r.on.join("\n"), text: (r.on.slice(0, 4).join(" · ") + (r.on.length > 4 ? " · + " + (r.on.length - 4) + " more" : "")) || "—" }), h("td", { class: "num" }, loadPill(r.all)))))));
+}
+
+/* 2b. Team load: engineers × this week and the next 7 */
+function teamLoad() {
+  const monday = (() => { const d = new Date(S.today + "T00:00:00"); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return isoLocal(d); })();
+  const weeks = Array.from({ length: 8 }, (_, i) => { const a = isoAdd(monday, i * 7); return [a, isoAdd(a, 6)]; });
+  const ppl = people().filter(p => p.active).sort((a, b) => a.name.localeCompare(b.name));
+  const open = S.tasks.filter(t => !t.actualDate);
+  const cell = (k, [a, b]) => open.filter(t => onTask(t, k)).filter(t => { const [s, e] = taskSpan(t); return s <= b && e >= a; });
+  const detail = h("div");
+  let picked = null;
+  const grid = h("div", { class: "pj-load", style: "grid-template-columns:minmax(110px,160px) repeat(" + weeks.length + ",minmax(48px,1fr))" });
+  const draw = () => {
+    grid.replaceChildren(h("div", { class: "h" }), ...weeks.map(([a], i) => h("div", { class: "h", text: (i ? "" : "Week of ") + a.slice(8, 10) + "/" + a.slice(5, 7) })));
+    ppl.forEach(p => {
+      grid.append(h("div", { class: "n", text: p.name }));
+      weeks.forEach((w, i) => {
+        const list = cell(p.key, w), [, cls] = loadLevel(list.length), on = picked && picked.k === p.key && picked.i === i;
+        grid.append(h("button", { class: "c l-" + (cls || "none") + (on ? " on" : ""), type: "button", text: String(list.length),
+          "aria-label": p.name + ", week of " + fmt(w[0]) + ": " + list.length + " open tasks", "aria-pressed": on ? "true" : "false",
+          onclick: () => { picked = on ? null : { k: p.key, i }; draw(); } }));
+      });
+    });
+    if (!picked) return detail.replaceChildren();
+    const w = weeks[picked.i], list = cell(picked.k, w).sort((a, b) => (a.effTarget || "9999").localeCompare(b.effTarget || "9999"));
+    detail.replaceChildren(h("div", { class: "tscroll" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", { colspan: "5", text: personName(picked.k) + " · week of " + fmt(w[0]) + " · " + list.length + " task" + (list.length === 1 ? "" : "s") }))),
+      h("tbody", {}, list.length ? list.map(t => h("tr", { class: "click", onclick: () => taskSheet(t) },
+        h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }),
+        h("td", {}, h("div", { text: t.projectName ? t.projectName + (t.projectItemName ? " › " + t.projectItemName : "") : t.title }), t.projectName && t.title !== t.projectName ? h("div", { class: "muted small", text: t.title }) : null),
+        h("td", { class: "mono nowrap", text: fmt(t.effTarget) }), h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status })),
+        h("td", { class: "muted small", text: (t.customer || "") + (t.projectName ? "" : " (no project)") }))) :
+        h("tr", {}, h("td", { colspan: "5", class: "muted", text: "No open tasks that week." }))))));
+  };
+  draw();
+  return h("div", { class: "panel" },
+    h("div", { class: "row between" }, h("h3", { text: "Team load" }),
+      h("div", { class: "pj-load-legend" }, h("span", {}, h("i", { class: "l-none" }), "0"), h("span", {}, h("i", { class: "l-ok" }), "1–3 tasks"),
+        h("span", {}, h("i", { class: "l-warn" }), "4–6"), h("span", {}, h("i", { class: "l-bad" }), "7 or more"))),
+    h("p", { class: "muted small m0", text: "Open daily tasks each engineer (lead or support) has running in each week, from start date to target date, on projects and off them. Overdue tasks count until they are completed. Click a number to see the tasks." }),
+    h("div", { class: "tscroll pj-load-wrap" }, grid), detail);
+}
+
+/* 1. Assign: the lead or the project's PM creates a daily task for an engineer on one activity */
+function assignSheet(pr, it, after) {
+  const tm = team(), cat = tm.categories.find(c => /project/i.test(c)) || tm.categories[0];
+  const info = h("div", { class: "note small", text: "Pick the lead engineer." });
+  const fSup = peopleToggles("as-sup", [], false, true);
+  const fLead = peopleToggles("as-lead", [], false, false, leads => { fSup.block(leads); info.textContent = leads.length ? leads.map(loadSummary).join(" ") : "Pick the lead engineer."; });
+  const fNote = h("textarea", { id: "as-note", maxlength: "2000", placeholder: "What should they do? e.g. Run SIT cases 1–12 with the customer" });
+  const fUrg = h("select", { id: "as-urg" }, tm.urgencies.map(u => h("option", { value: u, text: u }))); fUrg.value = "Medium";
+  const go = h("button", { class: "btn primary", text: "Assign", onclick: async () => {
+    const lead = fLead.value();
+    if (!lead.length) return toast("Pick the lead engineer.");
+    go.disabled = true;
+    try {
+      await api("POST", "/api/teams/" + S.teamId + "/tasks", { category: cat, title: pr.name, urgency: fUrg.value, percent: 0, progress: fNote.value,
+        lead, support: fSup.value(), startDate: S.today, projectId: pr.id, projectItemId: it.id });
+      closeSheet(); toast("Assigned to " + lead.map(personName).join(" / ")); await reloadTeam(); after && after();
+    } catch (e) { toast(e.message); go.disabled = false; }
+  } });
+  openSheet("Assign: " + it.name, [
+    h("p", { class: "muted small m0", text: "Creates a daily task for the engineer, linked to this activity. It shows on their Tracker straight away; they update its progress as usual." }),
+    h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Project" }), h("input", { type: "text", value: (pr.client ? pr.client + " · " : "") + pr.name, disabled: true })),
+      h("label", { class: "field" }, h("span", { text: "Target date (from the plan)" }), h("input", { type: "text", value: fmt(it.endDate), disabled: true }))),
+    h("div", { class: "field" }, h("span", { class: "lbl", text: "Lead engineer" }), fLead),
+    h("div", { class: "field" }, h("span", { class: "lbl", text: "Support engineer" }), fSup),
+    h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Category" }), h("input", { type: "text", value: cat, disabled: true })), h("label", { class: "field" }, h("span", { text: "Urgency" }), fUrg)),
+    h("label", { class: "field" }, h("span", { text: "Note for the engineer (first line of Task progress)" }), fNote),
+    info], [go, h("button", { class: "btn", text: "Cancel", onclick: closeSheet })]);
 }

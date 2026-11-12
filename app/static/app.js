@@ -417,7 +417,6 @@ function viewTracker(main) {
 const ARCH_PERIODS = [["", "All time"], ["thisweek", "This week"], ["lastweek", "Last week"], ["thismonth", "This month"], ["lastmonth", "Last month"],
   ["last3", "Last 3 months"], ["thisyear", "This year"], ["lastyear", "Last year"], ["custom", "Custom dates…"]];
 const ARCH_SIZES = [25, 50, 100];
-function isoLocal(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 function periodRange(p, from, to) {
   // [from, to] as YYYY-MM-DD, both included; weeks start on Monday
   const now = new Date(), y = now.getFullYear(), m = now.getMonth();
@@ -571,9 +570,14 @@ function taskSheet(t) {
   const dl = h("datalist", { id: "cust-list" }, tm.customers.map(c => h("option", { value: c })));
   // Project and activity: optional. Choosing a project fills in its client.
   const projList = (S.projects?.projects || []).filter(p => !["Completed", "Cancelled"].includes(p.status) || p.id === T.projectId);
-  const fProj = h("select", { id: "t-proj", disabled: locked }, h("option", { value: "", text: "No project" }),
-    projList.map(p => h("option", { value: String(p.id), text: (p.client ? p.client + " · " : "") + p.name })));
-  fProj.value = T.projectId ? String(T.projectId) : "";
+  // Category "Project": Main task / project is picked from the team's running projects (or "Other" to type one)
+  const isProjCat = c => /project/i.test(c || "");
+  const OTHER = "__other";
+  const fProj = h("select", { id: "t-proj", disabled: locked }, h("option", { value: "", text: "Choose a project…" }),
+    projList.length ? h("optgroup", { label: "Running projects" }, projList.map(p => h("option", { value: String(p.id), text: (p.client ? p.client + " · " : "") + p.name }))) : null,
+    h("optgroup", { label: "Not in the list" }, h("option", { value: OTHER, text: "Other project (not registered)…" })));
+  fProj.value = T.projectId ? String(T.projectId) : (t && isProjCat(T.category) ? OTHER : "");
+  const projId = () => fProj.value && fProj.value !== OTHER ? fProj.value : "";
   const fItem = h("select", { id: "t-item", disabled: locked || !T.projectId }, h("option", { value: "", text: "Choose the project first" }));
   const fillItems = async (pid, keep) => {
     fItem.replaceChildren(h("option", { value: "", text: pid ? "Loading…" : "Choose the project first" }));
@@ -592,9 +596,31 @@ function taskSheet(t) {
       if (pr.client && !locked) { fCust.value = pr.client; fCust.disabled = true; fCust.dispatchEvent(new Event("input")); }
     } catch (e) { fItem.replaceChildren(h("option", { value: "", text: "Couldn't load the plan" })); }
   };
-  fProj.addEventListener("change", () => { if (!fProj.value) fCust.disabled = locked; fillItems(fProj.value, null); planTarget(); });
+  const projRow = h("label", { class: "field" }, h("span", { text: "Main task / project" }), fProj);
+  const titleRow = h("label", { class: "field" }, h("span", { text: "Main task / project" }), fTitle);
+  const itemRow = h("label", { class: "field" }, h("span", { text: "Phase / activity" }), fItem);
+  const projMode = () => isProjCat(fCat.value);
+  const layout = () => {
+    const pm = projMode(), pid = projId();
+    projRow.hidden = !pm; itemRow.hidden = !pm || !pid;
+    titleRow.hidden = pm && fProj.value !== OTHER;
+    titleRow.firstChild.textContent = pm ? "Project name (not registered)" : "Main task / project";
+    fTitle.placeholder = pm ? "e.g. Bank Rakyat report automation" : "e.g. Quarterly health check";
+  };
+  fProj.addEventListener("change", () => {
+    const pid = projId();
+    if (!pid) fCust.disabled = locked;
+    if (fProj.value === OTHER && projList.some(p => p.name === fTitle.value)) fTitle.value = "";
+    fillItems(pid, null); planTarget(); layout();
+  });
+  fCat.addEventListener("change", () => {
+    // leaving the Project category drops the project link (and its plan date)
+    if (!projMode() && projId()) { fProj.value = ""; fCust.disabled = locked; fillItems("", null); planTarget(); }
+    layout();
+  });
   fItem.addEventListener("change", () => planTarget());
   if (T.projectId) fillItems(String(T.projectId), T.projectItemId);
+  layout();
   const fUrg = h("select", { id: "t-urg", disabled: locked }, tm.urgencies.map(u => h("option", { value: u, text: u }))); fUrg.value = T.urgency;
   const fPct = h("input", { type: "number", id: "t-pct", min: "0", max: "100", step: "5", value: String(T.percent || 0), disabled: locked });
   const fProg = h("textarea", { id: "t-prog", disabled: locked, maxlength: "12000", placeholder: "Latest progress, one update per line" }); fProg.value = T.progress || "";
@@ -614,7 +640,7 @@ function taskSheet(t) {
   const tFree = fTarget.disabled, ownTarget = { v: fTarget.value };
   // linked to a project phase / activity: the target is its end date in the plan, and can't be changed here
   function planTarget() {
-    const pr = fProj.value && S.pdetail?.[fProj.value], id = Number(fItem.value);
+    const pr = projId() && S.pdetail?.[projId()], id = Number(fItem.value);
     let it = null;
     if (pr && id) pr.phases.forEach(ph => { if (ph.id === id) it = ph; ph.items.forEach(x => { if (x.id === id) it = x; }); });
     if (it) {
@@ -641,9 +667,7 @@ function taskSheet(t) {
   if (t) loadHistory(t, hist);
   const body = [dl, ...banners,
     h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Category" }), fCat), h("label", { class: "field" }, h("span", { text: "Urgency" }), fUrg)),
-    h("label", { class: "field" }, h("span", { text: "Main task / project" }), fTitle),
-    projList.length || T.projectId ? h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Project (optional)" }), fProj),
-      h("label", { class: "field" }, h("span", { text: "Phase / activity" }), fItem)) : null,
+    projRow, titleRow, itemRow,
     h("label", { class: "field" }, h("span", { text: "Customer" }), (() => {
       const ico = h("span", { class: "cust-slot" }, custIcon(fCust.value));
       fCust.addEventListener("input", () => ico.replaceChildren(custIcon(fCust.value.trim()) || ""));
@@ -662,15 +686,18 @@ function taskSheet(t) {
     hist];
   const saveLabel = isNew ? "Add task" : "Save changes";
   const save = h("button", { class: "btn primary", text: saveLabel, disabled: locked, onclick: async () => {
-    if (!fTitle.value.trim()) { toast("Give the task a name."); return fTitle.focus(); }
     if (!fCat.value) { toast("Choose a category."); return fCat.focus(); }
+    const pid = projMode() ? projId() : "", pr = pid && projList.find(p => String(p.id) === pid);
+    if (projMode() && !fProj.value) { toast("Choose the project, or Other project if it isn't registered."); return fProj.focus(); }
+    if (!pr && !fTitle.value.trim()) { toast("Give the task a name."); return fTitle.focus(); }
     const leads = fLead.value();
     if (!leads.length) return toast("Choose at least one Lead Engineer.");
-    if (!lead && !leads.includes(mk)) return toast("Keep yourself as a Lead Engineer. You can only manage tasks you lead.");
-    const data = { category: fCat.value, title: fTitle.value, customer: fCust.value, urgency: fUrg.value, percent: Number(fPct.value) || 0, progress: fProg.value,
+    const myPm = pr && pr.canEdit;  // the project's manager can set anyone as lead engineer on its tasks
+    if (!lead && !myPm && !leads.includes(mk)) return toast("Keep yourself as a Lead Engineer. You can only manage tasks you lead.");
+    const data = { category: fCat.value, title: pr ? pr.name : fTitle.value, customer: fCust.value, urgency: fUrg.value, percent: Number(fPct.value) || 0, progress: fProg.value,
       lead: leads, support: fSup.value(), startDate: fStart.value || null, actualDate: fActual.value || null,
       ...(fTarget.dataset.plan ? {} : { target: fTarget.value || null }),
-      projectId: fProj.value ? Number(fProj.value) : null, projectItemId: fProj.value && fItem.value ? Number(fItem.value) : null };
+      projectId: pid ? Number(pid) : null, projectItemId: pid && fItem.value ? Number(fItem.value) : null };
     save.disabled = true;
     try {
       const r = isNew ? await api("POST", "/api/teams/" + S.teamId + "/tasks", data) : await api("PUT", "/api/tasks/" + t.id, data);

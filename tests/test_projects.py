@@ -212,6 +212,36 @@ class ProjectTests(unittest.TestCase):
         self.L.req("DELETE", "/api/tasks/%d" % t["id"])
         self.L.req("DELETE", "/api/projects/%d" % pid)
 
+    def test_pm_assigns_tasks_on_own_project(self):
+        self.set_role("pm")
+        try:
+            s, mine = self.create(self.M, name="Bob runs this")              # Bob is its Project Manager
+            s, other = self.create(pmPersonId=self.alice_id, name="Alice runs this")
+            act = self.detail(mine["id"], self.M)["phases"][2]["items"][0]
+            body = {"category": "Project", "title": "Bob runs this", "lead": ["cara"], "startDate": "2026-11-12", "progress": "Run SIT cases 1-12",
+                    "projectId": mine["id"], "projectItemId": act["id"]}
+            s, t, _ = self.M.req("POST", "/api/teams/automation/tasks", body)  # assigns Cara, without being on the task
+            self.assertEqual((s, t.get("pending")), (200, []), t)
+            task = next(x for x in self.M.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if x["id"] == t["id"])
+            self.assertEqual((task["lead"], task["target"], task["canEdit"]), (["cara"], act["endDate"], True))
+            self.assertTrue(task["progress"].startswith("[") and "Bob]" in task["progress"].splitlines()[0])  # signed by the PM
+            # the PM can update it later; the project page shows its latest note
+            upd = {k: task[k] for k in ("category", "title", "urgency", "percent", "progress", "lead", "support", "projectId", "projectItemId")}
+            upd.update(startDate=task["startDate"], urgency="High")
+            self.assertEqual(self.M.req("PUT", "/api/tasks/%d" % t["id"], upd)[0], 200)
+            pt = next(x for x in self.detail(mine["id"], self.M)["tasks"] if x["id"] == t["id"])
+            self.assertIn("Run SIT cases 1-12", pt["lastNote"])
+            self.assertEqual(pt["startDate"], "2026-11-12")
+            # ...but not on a project someone else manages, nor tasks outside projects
+            self.assertEqual(self.M.req("POST", "/api/teams/automation/tasks", dict(body, projectId=other["id"], projectItemId=None))[0], 400)
+            self.assertEqual(self.M.req("POST", "/api/teams/automation/tasks", dict(body, projectId=None, projectItemId=None))[0], 400)
+            lst = {p["id"]: p["canEdit"] for p in self.M.req("GET", "/api/teams/automation/projects")[1]["projects"]}
+            self.assertEqual((lst[mine["id"]], lst[other["id"]]), (True, False))
+            self.L.req("DELETE", "/api/tasks/%d" % t["id"])
+            self.L.req("DELETE", "/api/projects/%d" % mine["id"]); self.L.req("DELETE", "/api/projects/%d" % other["id"])
+        finally:
+            self.set_role("member")
+
     def test_export_timeline_layout(self):
         s, r = self.create()
         pid = r["id"]

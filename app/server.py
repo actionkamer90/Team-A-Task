@@ -1158,20 +1158,28 @@ def load_tasks(h, tid, approved_only=False):
     return out
 
 
-def can_edit(role, my_key, t):
+def can_edit(role, my_key, t, pm_projects=()):
     if role in ("lead", "admin"):
         return True
     if is_archived(t):  # archived tasks: only the team lead (or an admin) may change them
         return False
-    return bool(my_key) and my_key in t["lead"]
+    # the task's Lead Engineer, or the Project Manager of the project it belongs to
+    return (bool(my_key) and my_key in t["lead"]) or (t.get("project_id") in pm_projects and t.get("project_id") is not None)
 
 
-def task_out(t, role, my_key, uid, td, req=None):
+def pm_projects(h, me):
+    """Ids of the projects this person manages (as their Project Manager)."""
+    if not me:
+        return set()
+    return {r["id"] for r in h.con.execute("SELECT id FROM projects WHERE pm_person_id=?", (me["id"],))}
+
+
+def task_out(t, role, my_key, uid, td, req=None, pm_pids=()):
     out = {"id": t["id"], "no": t["no"], "category": t["category"], "title": t["title"], "progress": t["progress"], "percent": t["percent"],
            "urgency": t["urgency"], "customer": t["customer"], "lead": t["lead"], "support": t["support"], "startDate": t["start_date"],
            "requestedTarget": t["requested_target"], "target": t["target"], "effTarget": t["target"] or t["requested_target"],
            "pending": not t["target"] and bool(t["requested_target"]), "actualDate": t["actual_date"], "status": status_of(t, td),
-           "archived": is_archived(t, td), "canEdit": can_edit(role, my_key, t), "approved": bool(t["approved"]),
+           "archived": is_archived(t, td), "canEdit": can_edit(role, my_key, t, pm_pids), "approved": bool(t["approved"]),
            "changePending": bool(req) and req["kind"] == "edit", "imported": bool(t["imported"]), "updatedAt": t["updated_at"],
            "pendingFields": sorted(k for k in json.loads(req["data"]) if k in ("target", "actual_date")) if req and req["kind"] == "edit" else [],
            "projectId": t.get("project_id"), "projectItemId": t.get("project_item_id"),
@@ -1187,7 +1195,8 @@ def api_tasks(h, tid):
     me = h.my_person(tid)
     td = today()
     reqs = {r["task_id"]: dict(r) for r in h.con.execute("SELECT * FROM change_requests WHERE team_id=? AND status='pending'", (tid,))}
-    return {"today": td, "tasks": [task_out(t, role, me and me["key"], h.user["id"], td, reqs.get(t["id"])) for t in load_tasks(h, tid)],
+    pm_pids = pm_projects(h, me)
+    return {"today": td, "tasks": [task_out(t, role, me and me["key"], h.user["id"], td, reqs.get(t["id"]), pm_pids) for t in load_tasks(h, tid)],
             "pendingApprovals": len(reqs) if role in ("lead", "admin") else None}
 
 
@@ -1391,7 +1400,9 @@ def api_task_create(h, tid):
     lead = role in ("lead", "admin")
     official = lead or bool(plan_t)  # a lead's date, or the plan's, is the official target; a member's is a request
     me = h.my_person(tid)
-    if not lead and me["key"] not in d["lead"]:
+    # a Project Manager can create tasks for anyone on a project they manage (assigning the work)
+    pm_task = not lead and d["project_id"] is not None and d["project_id"] in pm_projects(h, me)
+    if not lead and not pm_task and me["key"] not in d["lead"]:
         raise bad("Add yourself as a Lead Engineer. You can only manage tasks you lead.")
     backdated = None
     if not lead and d["actual_date"] and d["actual_date"] < today():
@@ -1438,16 +1449,17 @@ def api_task_update(h, task_id):
     role = h.need_member(t["team_id"])
     me = h.my_person(t["team_id"])
     my_key = me and me["key"]
-    if not can_edit(role, my_key, t):
+    my_pm = pm_projects(h, me)
+    if not can_edit(role, my_key, t, my_pm):
         if is_archived(t) and role not in ("lead", "admin"):
             raise ApiError(403, "This task is archived. Only the team lead can change it.")
-        raise ApiError(403, "Only the task's Lead Engineer or the team lead can change it.")
+        raise ApiError(403, "Only the task's Lead Engineer, the project's manager or the team lead can change it.")
     d = parse_task(h, t["team_id"], h.body, h.team(t["team_id"]))
     d["progress"] = sign_progress(t["progress"], d["progress"], signer_name(h, t["team_id"]))
     plan_t = d.pop("plan_target", None)
     target = plan_t or (d_field(h.body, "target") if "target" in h.body else (t["target"] or t["requested_target"]))
     lead = role in ("lead", "admin")
-    if not lead and my_key not in d["lead"]:
+    if not lead and my_key not in d["lead"] and not (d["project_id"] is not None and d["project_id"] in my_pm):
         raise bad("Keep yourself as a Lead Engineer, or ask your team lead to hand the task over.")
     changes = diff_task(t, d, target)
     if not changes:
@@ -1894,7 +1906,12 @@ def api_projects(h, tid):
     h.need_member(tid)
     rows = h.con.execute("SELECT * FROM projects WHERE team_id=? ORDER BY CASE status WHEN 'Active' THEN 0 WHEN 'Planned' THEN 1 "
                          "WHEN 'On Hold' THEN 2 WHEN 'Completed' THEN 3 ELSE 4 END, start_date DESC, name", (tid,)).fetchall()
-    return {"projects": [project_out(h, dict(r)) for r in rows], "canCreate": can_create_projects(h, tid), "templates": PROJECT_TEMPLATES,
+    role, me = h.need_member(tid), h.my_person(tid)
+    def out(r):
+        o = project_out(h, dict(r))
+        o["canEdit"] = role in ("lead", "admin") or bool(me and r["pm_person_id"] == me["id"])  # lead or this project's PM
+        return o
+    return {"projects": [out(r) for r in rows], "canCreate": can_create_projects(h, tid), "templates": PROJECT_TEMPLATES,
             "statuses": PROJECT_STATUSES}
 
 
@@ -1925,10 +1942,13 @@ def api_project(h, pid):
     role, me, edit = project_rights(h, p)
     out = project_out(h, p, detail=True)
     out["canEdit"], out["canDelete"] = edit, role in ("lead", "admin")
-    tasks = h.con.execute("SELECT t.id, t.no, t.title, t.lead, t.project_item_id, t.actual_date, t.target, t.requested_target FROM tasks t "
+    tasks = h.con.execute("SELECT t.id, t.no, t.title, t.lead, t.support, t.project_item_id, t.actual_date, t.target, t.requested_target, "
+                          "t.start_date, t.created_at, t.progress FROM tasks t "
                           "WHERE t.project_id=? ORDER BY t.no", (p["id"],)).fetchall()
     out["tasks"] = [{"id": t["id"], "no": t["no"], "title": t["title"], "lead": json.loads(t["lead"]), "itemId": t["project_item_id"],
-                     "target": t["target"] or t["requested_target"], "actualDate": t["actual_date"], "status": status_of(t)} for t in tasks]
+                     "target": t["target"] or t["requested_target"], "actualDate": t["actual_date"], "status": status_of(t),
+                     "support": json.loads(t["support"]), "startDate": t["start_date"] or (t["created_at"] or "")[:10] or None,
+                     "lastNote": next((ln.strip() for ln in (t["progress"] or "").splitlines() if ln.strip()), "")[:300]} for t in tasks]
     return out
 
 
