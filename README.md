@@ -34,8 +34,8 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Project Manager role.** A team lead makes a member a Project Manager on *Team & Invites*; they can create
   projects, run the plans of projects they manage, assign their activities to engineers (*+ Assign* creates the
   daily task) and update those tasks.
-- **Team load.** Each project page lists who works on it and how loaded they are; the Projects tab shows every
-  engineer's open tasks for this week and the next 7 (leads and Project Managers).
+- **Team load.** Each project page lists who works on it and how loaded they are; the Summary tab shows every
+  engineer's open tasks for this week and the next 7.
 - **Clients (team leads and administrators).** Every client with a short name (e.g. RHB) and full name
   (e.g. RHB Bank Bhd): add a client, tick which teams work with it, and upload its logo once for those teams.
   Team leads see their own teams only.

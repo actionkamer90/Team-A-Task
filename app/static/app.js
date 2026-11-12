@@ -849,10 +849,12 @@ function viewRequests(main) {
 
 /* ---------- summary ---------- */
 function viewSummary(main) {
-  const tiles = h("div", { class: "tiles" }), load = h("div"), byCust = h("div");
+  const tiles = h("div", { class: "tiles" }), load = h("div"), byCust = h("div"), weekly = h("div");
   main.append(h("h2", { text: team().name + " · summary" }), tiles,
-    h("div", { class: "grid2" }, h("div", { class: "panel" }, h("h3", { text: "Task load by engineer (open tasks)" }), load), h("div", { class: "panel" }, h("h3", { text: "Open tasks by customer" }), byCust)));
+    h("div", { class: "grid2" }, h("div", { class: "panel" }, h("h3", { text: "Task load by engineer (open tasks)" }), load), h("div", { class: "panel" }, h("h3", { text: "Open tasks by customer" }), byCust)),
+    weekly);
   refreshFn = () => {
+    weekly.replaceChildren(teamLoad());  // engineers × the next 8 weeks (projects.js)
     const open = S.tasks.filter(t => !t.actualDate), done = S.tasks.filter(t => t.actualDate), ym = (S.today || "").slice(0, 7);
     tiles.replaceChildren(tile("Open", open.length), tile("Delayed", open.filter(t => t.status === "Delay").length, "bad"),
       tile("Completed this month", done.filter(t => t.actualDate.startsWith(ym)).length, "ok"), tile("Completed all time", done.length));

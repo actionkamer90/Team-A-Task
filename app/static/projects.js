@@ -72,7 +72,6 @@ function viewProjects(main) {
     draw();
     return box;
   };
-  if (isLead() || team()?.isPm) main.append(teamLoad());
   main.append(h("h3", { class: "pj-sec", text: "Running projects (" + running.length + ")" }),
     section(running, R, "Running project pages", "No running projects. Completed and cancelled projects are listed below."));
   if (closed.length) main.append(h("h3", { class: "pj-sec", text: "Completed and cancelled (" + closed.length + ")" }),
@@ -141,11 +140,11 @@ function projectPage(main, id) {
         pr.overdue + " activit" + (pr.overdue === 1 ? "y is" : "ies are") + " past their end date and not completed" + (pr.atRisk > pr.overdue ? ", or marked At Risk" : "") + ". The project status is " + pr.status + ".") : null);
     if (editing) return box.replaceChildren(header, planEditor());
     box.replaceChildren(header,
+      h("div", { class: "panel" }, h("div", { class: "row between" }, h("h3", { text: "Team on this project" }), h("span", { class: "muted small", text: "Engineers with daily tasks on this project (lead or support)" })), projectTeam(pr)),
       h("div", { class: "panel pj-gantt-panel" }, h("div", { class: "row between" }, h("h3", { text: "Timeline" }), ganttLegend()), gantt(pr)),
       h("div", { class: "panel" }, h("div", { class: "row between" }, h("h3", { text: "Plan" }),
         pr.canEdit ? h("span", { class: "muted small", text: "Change an activity's status here; phases follow their activities." }) : null),
         readyNote(), planTable(pr, pr.canEdit ? setStatus : null, Object.assign(ui, { assign: pr.canEdit && pr.status !== "Completed" && pr.status !== "Cancelled" ? it => assignSheet(pr, it, load) : null }))),
-      h("div", { class: "panel" }, h("div", { class: "row between" }, h("h3", { text: "Team on this project" }), h("span", { class: "muted small", text: "From the daily tasks linked to this project" })), projectTeam(pr)),
       h("div", { class: "panel" }, h("h3", { text: "Daily tasks linked to this project" }), linkedTasks(pr, openItems)),
       pr.holidays.length ? h("p", { class: "muted small m0", text: "Public holidays skipped in this plan: " + pr.holidays.map(x => fmt(x.date) + " " + x.name).join(" · ") }) :
         h("p", { class: "muted small m0", text: "No public holidays registered for this project yet. Add them in Edit plan → Public holidays." }));
@@ -283,10 +282,10 @@ function planTable(pr, setStatus, ui) {
       bits.push(h("button", { class: "linkbtn small pj-tcount " + (all ? "ok-text" : ""), "aria-expanded": open ? "true" : "false",
         title: "Show these daily tasks and their latest progress",
         text: it.tasksDone + " / " + it.tasks + " task" + (it.tasks === 1 ? "" : "s") + " done " + (open ? "▴" : "▾"), onclick: () => ui.toggle(it) }));
-      if (all && it.status !== "Completed" && setStatus)
+      if (all && it.status !== "Completed" && setStatus && it.kind !== "phase")  // a phase's status follows its activities
         bits.push(h("button", { class: "btn small pj-markdone", text: "✓ Mark completed", onclick: e => setStatus(it, "Completed", e.target) }));
     }
-    if (ui.assign && it.status !== "Completed")
+    if (ui.assign)
       bits.push(h("button", { class: "linkbtn small pj-assign", text: "+ Assign", "aria-label": "Assign " + it.name + " to an engineer", title: "Create a daily task for an engineer on this activity", onclick: () => ui.assign(it) }));
     return h("td", {}, h("div", { class: "pj-tcell" }, bits));
   };
@@ -307,12 +306,11 @@ function planTable(pr, setStatus, ui) {
       h("td", { class: "small nowrap", text: weeksLabel(it.startDay, it.endDay) }), h("td", { class: "mono nowrap", text: fmt(it.startDate) }), h("td", { class: "mono nowrap", text: fmt(it.endDate) }),
       h("td", { class: "small", text: isPh ? it.deliverable : it.owner }),
       statusCell(it, isPh),
-      isPh ? h("td", { class: "small", text: it.remarks || "" }) : tasksCell(it));
-    rows.push(r(String(pi + 1), ph, "Phase", true));
-    ph.items.forEach((it, ki) => {
-      rows.push(r((pi + 1) + "." + (ki + 1), it, it.kind === "milestone" ? "Milestone" : "Activity", false));
-      if (ui.open.has(it.id) && it.tasks) rows.push(taskRows(it));
-    });
+      tasksCell(it));
+    // each row, then (when opened) its daily tasks right under it
+    const add = (row, it) => { rows.push(row); if (ui.open.has(it.id) && it.tasks) rows.push(taskRows(it)); };
+    add(r(String(pi + 1), ph, "Phase", true), ph);
+    ph.items.forEach((it, ki) => add(r((pi + 1) + "." + (ki + 1), it, it.kind === "milestone" ? "Milestone" : "Activity", false), it));
   });
   if (!rows.length) return h("p", { class: "muted", text: "This plan is empty." + (pr.canEdit ? " Use Edit plan to add phases and activities." : "") });
   return h("div", { class: "tscroll" }, h("table", { class: "pj-plan-table" }, h("thead", {}, h("tr", {}, ["No", "Phase / activity", "Type", "Weeks", "Start", "End", "Owner / deliverable", "Status", "Remarks / daily tasks"].map(c => h("th", { text: c })))), h("tbody", {}, rows)));
@@ -348,7 +346,7 @@ function linkedTasks(pr, hl) {
 /* ---------- Gantt timeline (SVG, like the Excel timeline: one column per working day) ---------- */
 function ganttLegend() {
   return h("div", { class: "help-legend pj-legend" }, h("span", {}, h("i", { class: "sw", style: "background:#1F7A99" }), "Phase"), h("span", {}, h("i", { class: "sw", style: "background:#A9CCD8" }), "Activity"),
-    h("span", {}, "◆ Milestone"), h("span", {}, h("i", { class: "ln", style: "border-top:2px solid #C00000" }), "Today"), h("span", {}, h("i", { class: "sw pj-sw-od" }), "Overdue"));
+    h("span", {}, "◆ Milestone"), h("span", {}, h("i", { class: "ln", style: "border-top:2px solid #C00000" }), "Today"), h("span", { class: "muted" }, "(Overdue) after a name"));
 }
 function gantt(pr) {
   // two SVGs side by side: the phase / activity names stay put, the day columns scroll left and right
@@ -394,9 +392,9 @@ function gantt(pr) {
     el("title", {}, g).textContent = it.name + "\n" + fmt(it.startDate) + " – " + fmt(it.endDate) + " · " + it.status + (it.overdue ? " · OVERDUE" : "");
     if (it.kind === "milestone") {
       const cx = (it.endDay - 0.5) * CW, cy = y + RH / 2;
-      el("path", { d: `M${cx},${cy - 7} L${cx + 7},${cy} L${cx},${cy + 7} L${cx - 7},${cy} Z`, class: "pj-ms" + (it.status === "Completed" ? " done" : "") + (it.overdue ? " od" : "") }, g);
+      el("path", { d: `M${cx},${cy - 7} L${cx + 7},${cy} L${cx},${cy + 7} L${cx - 7},${cy} Z`, class: "pj-ms" + (it.status === "Completed" ? " done" : "") }, g);
     } else {
-      el("rect", { x: x1 + 1, y: y + (r.phase ? 4 : 6), width: Math.max(4, x2 - x1 - 2), height: r.phase ? RH - 8 : RH - 12, rx: 3, fill: r.phase ? dark : light, class: "pj-bar" + (it.overdue ? " od" : "") }, g);
+      el("rect", { x: x1 + 1, y: y + (r.phase ? 4 : 6), width: Math.max(4, x2 - x1 - 2), height: r.phase ? RH - 8 : RH - 12, rx: 3, fill: r.phase ? dark : light, class: "pj-bar" }, g);
       if (it.status === "Completed" && !r.phase) txt("✓", { x: x2 - 9, y: y + 15, class: "pj-check" }, g);
     }
   });
@@ -456,7 +454,7 @@ function teamLoad() {
   const open = S.tasks.filter(t => !t.actualDate);
   const cell = (k, [a, b]) => open.filter(t => onTask(t, k)).filter(t => { const [s, e] = taskSpan(t); return s <= b && e >= a; });
   const detail = h("div");
-  let picked = null;
+  let picked = S.loadPick && people().some(p => p.key === S.loadPick.k) ? S.loadPick : null;
   const grid = h("div", { class: "pj-load", style: "grid-template-columns:minmax(110px,160px) repeat(" + weeks.length + ",minmax(48px,1fr))" });
   const draw = () => {
     grid.replaceChildren(h("div", { class: "h" }), ...weeks.map(([a], i) => h("div", { class: "h", text: (i ? "" : "Week of ") + a.slice(8, 10) + "/" + a.slice(5, 7) })));
@@ -466,7 +464,7 @@ function teamLoad() {
         const list = cell(p.key, w), [, cls] = loadLevel(list.length), on = picked && picked.k === p.key && picked.i === i;
         grid.append(h("button", { class: "c l-" + (cls || "none") + (on ? " on" : ""), type: "button", text: String(list.length),
           "aria-label": p.name + ", week of " + fmt(w[0]) + ": " + list.length + " open tasks", "aria-pressed": on ? "true" : "false",
-          onclick: () => { picked = on ? null : { k: p.key, i }; draw(); } }));
+          onclick: () => { picked = S.loadPick = on ? null : { k: p.key, i }; draw(); } }));
       });
     });
     if (!picked) return detail.replaceChildren();
@@ -482,7 +480,7 @@ function teamLoad() {
   };
   draw();
   return h("div", { class: "panel" },
-    h("div", { class: "row between" }, h("h3", { text: "Team load" }),
+    h("div", { class: "row between" }, h("h3", { text: "Team load by week (open tasks)" }),
       h("div", { class: "pj-load-legend" }, h("span", {}, h("i", { class: "l-none" }), "0"), h("span", {}, h("i", { class: "l-ok" }), "1–3 tasks"),
         h("span", {}, h("i", { class: "l-warn" }), "4–6"), h("span", {}, h("i", { class: "l-bad" }), "7 or more"))),
     h("p", { class: "muted small m0", text: "Open daily tasks each engineer (lead or support) has running in each week, from start date to target date, on projects and off them. Overdue tasks count until they are completed. Click a number to see the tasks." }),
