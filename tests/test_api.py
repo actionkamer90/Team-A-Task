@@ -126,33 +126,37 @@ class TrackerTest(unittest.TestCase):
     def test_member_task_flow_and_target_rules(self):
         s, r, _ = self.member.req("POST", "/api/teams/automation/tasks",
                                   {"category": "Tickets", "title": "Member task", "urgency": "High", "lead": ["bob"], "support": [], "target": "2026-12-31", "startDate": "2026-11-01"})
-        self.assertEqual(s, 200, r)
+        self.assertEqual((s, r.get("pending")), (200, []), r)
         tid = r["id"]
         t = self._task(self.member, tid)
-        self.assertIsNone(t["target"])            # member's date is only a request
-        self.assertEqual(t["requestedTarget"], "2026-12-31")
-        self.assertTrue(t["pending"])
-        # member cannot set the official target
+        self.assertEqual(t["target"], "2026-12-31")  # the date given when the task is created is official straight away
+        self.assertFalse(t["pending"])
+        # changing it later is a request to the lead
+        body = self._body(t)
+        body["target"] = "2027-02-28"
+        self.assertEqual(self.member.req("PUT", "/api/tasks/%d" % tid, body)[1].get("pending"), ["target"])
+        self.assertEqual(self._task(self.member, tid)["target"], "2026-12-31")
+        self.member.req("DELETE", "/api/requests/%d" % next(q["id"] for q in self.member.req("GET", "/api/teams/automation/requests")[1]["requests"]
+                                                          if q["taskId"] == tid and q["status"] == "pending"))
+        # member cannot set the official target directly
         self.assertEqual(self.member.req("PUT", "/api/tasks/%d/target" % tid, {"target": "2027-01-15"})[0], 403)
         # lead can, and it is logged
         self.assertEqual(self.lead.req("PUT", "/api/tasks/%d/target" % tid, {"target": "2027-01-15"})[0], 200)
         t = self._task(self.member, tid)
         self.assertEqual(t["target"], "2027-01-15")
-        self.assertFalse(t["pending"])
-        # once official, a member's requestedTarget is ignored
+        # a member's requestedTarget is ignored
         body = self._body(t)
         body["requestedTarget"] = "2030-01-01"
         body["percent"] = 40
         self.assertEqual(self.member.req("PUT", "/api/tasks/%d" % tid, body)[0], 200)
         t = self._task(self.member, tid)
-        self.assertEqual(t["effTarget"], "2027-01-15")
-        self.assertEqual(t["percent"], 40)
+        self.assertEqual((t["effTarget"], t["percent"]), ("2027-01-15", 40))
         hist = self.member.req("GET", "/api/tasks/%d/history" % tid)[1]["entries"]
-        kinds = [e["kind"] for e in hist]
-        self.assertEqual(kinds, ["edit", "target", "request", "create"])  # the member's proposed target is in the history too
+        self.assertEqual([e["kind"] for e in hist][:2], ["edit", "target"])
         self.assertIn(["percent", 0, 40], hist[0]["changes"])
-        self.assertEqual(hist[1]["changes"], {"from": None, "to": "2027-01-15"})
-        self.assertEqual(hist[1]["by"], "Alice")
+        self.assertEqual((hist[1]["changes"], hist[1]["by"]), ({"from": "2026-12-31", "to": "2027-01-15"}, "Alice"))
+        first = next(e for e in hist if e["kind"] == "target" and e["changes"].get("atCreate"))
+        self.assertEqual((first["changes"]["to"], first["by"]), ("2026-12-31", "Bob"))  # who set the first date, and when
         # members can't delete; leads can
         self.assertEqual(self.member.req("DELETE", "/api/tasks/%d" % tid)[0], 403)
         self.assertEqual(self.lead.req("DELETE", "/api/tasks/%d" % tid)[0], 200)
@@ -313,21 +317,13 @@ class TrackerTest(unittest.TestCase):
         # members may only create tasks they lead
         self.assertEqual(M.req("POST", "/api/teams/automation/tasks", dict(new, lead=["alice"]))[0], 400)
         s, r, _ = M.req("POST", "/api/teams/automation/tasks", new)
-        self.assertEqual(s, 200)
-        self.assertTrue(r["pending"])          # only because a target date was proposed
+        self.assertEqual((s, r["pending"]), (200, []))  # a new task's target date is official at once, no approval
         tid = r["id"]
         t = self._task(M, tid)
-        self.assertTrue(t["approved"])        # the task itself counts straight away
-        self.assertIsNone(t["target"])
-        self.assertEqual(t["effTarget"], "2026-12-15")
-        self.assertTrue(t["pending"])          # shows "awaiting lead"
-        rq = next(x for x in L.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == tid)
-        self.assertEqual(rq["changes"], [["target", None, "2026-12-15"]])  # lead sees: no official date -> proposed
-        self.assertEqual(M.req("POST", "/api/requests/%d/approve" % rq["id"])[0], 403)  # members can't approve
-        self.assertEqual(L.req("POST", "/api/requests/%d/approve" % rq["id"])[0], 200)
-        t = self._task(M, tid)
-        self.assertEqual(t["target"], "2026-12-15")
-        self.assertFalse(t["pending"])
+        self.assertTrue(t["approved"])
+        self.assertEqual((t["target"], t["effTarget"], t["pending"]), ("2026-12-15", "2026-12-15", False))
+        self.assertFalse(any(x["taskId"] == tid for x in L.req("GET", "/api/teams/automation/requests")[1]["requests"]))
+        self.assertEqual((t["createdBy"] is not None, t["createdAt"][:4]), (True, t["createdAt"][:4]))  # the lead's list of new tasks uses these
 
         # details save directly, no request
         s, r, _ = M.req("PUT", "/api/tasks/%d" % tid, dict(self._body(t), percent=60, progress="halfway"))
@@ -366,11 +362,17 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(self._task(M, tid)["effTarget"], "2026-12-22")
         rej = next(x for x in M.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["id"] == rq["id"])
         self.assertEqual((rej["status"], rej["note"], rej["decidedBy"]), ("rejected", "Customer needs it in December", "Alice"))
+        # the lead's history of decided requests has both decisions
+        hist = [x for x in L.req("GET", "/api/teams/automation/requests?scope=history")[1]["requests"] if x["taskId"] == tid]
+        self.assertEqual([x["status"] for x in hist][:2], ["rejected", "approved"])
+        self.assertEqual(M.req("GET", "/api/teams/automation/requests?scope=history")[1]["requests"],
+                         M.req("GET", "/api/teams/automation/requests")[1]["requests"])  # members only ever get their own
         # members can't clear a target
         self.assertEqual(M.req("PUT", "/api/tasks/%d" % tid, dict(self._body(self._task(M, tid)), target=None))[0], 400)
 
         # a rejected proposal on a task with no official target stops showing
-        s, r, _ = M.req("POST", "/api/teams/automation/tasks", dict(new, title="No official target yet", target="2026-12-01"))
+        s, r, _ = M.req("POST", "/api/teams/automation/tasks", dict(new, title="No official target yet", target=None))
+        M.req("PUT", "/api/tasks/%d" % r["id"], dict(self._body(self._task(M, r["id"])), target="2026-12-01"))  # proposed later
         rq = next(x for x in L.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == r["id"])
         L.req("POST", "/api/requests/%d/reject" % rq["id"], {"note": "Too early"})
         t = self._task(M, r["id"])
@@ -409,9 +411,9 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual((t["actualDate"], t["percent"], t["status"]), (last_week, 100, "Completed Early"))
         # a member's new task entered as already completed in the past also waits
         s, r, _ = M.req("POST", "/api/teams/automation/tasks", dict(base, title="Old job", target=last_week, actualDate=yesterday))
-        self.assertEqual(r["pending"], ["actual_date", "target"])
+        self.assertEqual(r["pending"], ["actual_date"])  # its target is set; the earlier completion date waits for the lead
         t = self._task(M, r["id"])
-        self.assertIsNone(t["actualDate"])
+        self.assertEqual((t["actualDate"], t["target"]), (None, last_week))
         # leads may backdate directly
         s, r, _ = L.req("PUT", "/api/tasks/%d" % tid2, dict(self._body(self._task(L, tid2)), actualDate=yesterday))
         self.assertNotIn("pending", r)
@@ -452,10 +454,10 @@ class TrackerTest(unittest.TestCase):
         today = _dt.date.today().isoformat()
         kpi = lambda: self.lead.req("GET", "/api/teams/automation/kpi?from=2026-01-01&to=2099-12-31")[1]["team"]["C"]
         before = kpi()
-        # completed today: counts straight away (only the proposed target waits)
+        # completed today: counts straight away, target included
         s, r, _ = self.member.req("POST", "/api/teams/automation/tasks", {"category": "Tickets", "title": "Done today", "lead": ["bob"],
                                                                          "target": today, "startDate": "2026-01-20", "actualDate": today})
-        self.assertEqual((s, r["pending"]), (200, ["target"]))
+        self.assertEqual((s, r["pending"]), (200, []))
         self.assertEqual(kpi(), before + 1)
         # completed in the past: waits for approval, so not counted yet
         s, r2, _ = self.member.req("POST", "/api/teams/automation/tasks", {"category": "Tickets", "title": "Done in January", "lead": ["bob"],
@@ -463,10 +465,10 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(r2["pending"], ["actual_date"])
         self.assertEqual(kpi(), before + 1)
         # withdrawing a proposal keeps the task; only the proposed date goes
-        rq = next(x for x in self.member.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == r["id"])
+        rq = next(x for x in self.member.req("GET", "/api/teams/automation/requests")[1]["requests"] if x["taskId"] == r2["id"])
         self.assertEqual(self.member.req("DELETE", "/api/requests/%d" % rq["id"])[0], 200)
-        t = self._task(self.member, r["id"])
-        self.assertEqual((t["effTarget"], t["changePending"], t["actualDate"]), (None, False, today))
+        t = self._task(self.member, r2["id"])
+        self.assertEqual((t["actualDate"], t["changePending"]), (None, False))
 
     def test_teams_are_isolated_and_users_can_join_several(self):
         A = self.admin

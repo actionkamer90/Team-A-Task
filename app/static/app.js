@@ -641,9 +641,12 @@ function taskSheet(t) {
   const fStart = h("input", { type: "date", id: "t-start", value: T.startDate || "", disabled: locked });
   const fActual = h("input", { type: "date", id: "t-actual", value: T.actualDate || "", max: S.today, disabled: locked || (othersPending && !lead) });
   const fTarget = h("input", { type: "date", id: "t-target", value: T.effTarget || "", disabled: locked || (othersPending && !lead) });
+  // a new task's target is official straight away; changing it later needs the lead (members)
+  const tNote = lead || isNew ? "" : " (lead approves)";
   const help = lead ? "Saving sets the official target date. Changes are logged."
+    : isNew ? "Set it now: it becomes the task's official target. Changing it later needs your team lead's approval."
     : t?.target ? "Official target " + fmt(t.target) + ". A new date needs your team lead's approval." : "Your proposed target. Your team lead approves it.";
-  const tHelp = h("small", { class: "muted", text: help }), tLabel = h("span", { text: "Target date" + (lead ? "" : " (lead approves)") });
+  const tHelp = h("small", { class: "muted", text: help }), tLabel = h("span", { text: "Target date" + tNote });
   const tFree = fTarget.disabled, ownTarget = { v: fTarget.value };
   // linked to a project phase / activity: the target is its end date in the plan, and can't be changed here
   function planTarget() {
@@ -657,7 +660,7 @@ function taskSheet(t) {
       tHelp.textContent = "The end date of " + it.name + " in the plan. It moves when the plan's dates change; to change it, change the plan.";
     } else if (fTarget.dataset.plan) {
       delete fTarget.dataset.plan; fTarget.value = ownTarget.v; fTarget.disabled = tFree;
-      tLabel.textContent = "Target date" + (lead ? "" : " (lead approves)"); tHelp.textContent = help;
+      tLabel.textContent = "Target date" + tNote; tHelp.textContent = help;
     }
   }
   const banners = [];
@@ -669,7 +672,8 @@ function taskSheet(t) {
   if (othersPending && !lead) banners.push(h("div", { class: "note warn", text: "Another engineer's " + pendingLabel(t.pendingFields) + " is waiting for the team lead. You can still update the other details." }));
   if (lead && t?.request) banners.push(h("div", { class: "note warn" }, "An engineer proposed: " + proposalText(t.request.data) + ". ",
     h("button", { class: "btn small", type: "button", text: "Review in Approvals", onclick: () => { closeSheet(); S.view = "approvals"; render(); } })));
-  if (!lead && !ro) banners.push(h("p", { class: "muted small m0", text: "Your changes to the details save straight away. A new target date, or a completed date earlier than today, needs your team lead's approval." }));
+  if (!lead && !ro) banners.push(h("p", { class: "muted small m0", text: isNew ? "The target date you give a new task counts straight away. A completed date earlier than today needs your team lead's approval."
+    : "Your changes to the details save straight away. Changing the target date, or a completed date earlier than today, needs your team lead's approval." }));
   const hist = h("div", { class: "hist" });
   if (t) loadHistory(t, hist);
   const body = [dl, ...banners,
@@ -755,7 +759,7 @@ async function loadHistory(t, box) {
           : "Approved " + e.changes.of + "'s request" + (e.changes.applied?.length ? ":" : "") }), ...asked(e.changes.applied)];
       else if (e.kind === "reject") lines = [h("div", { class: "tgt", text: "Rejected " + e.changes.of + "'s request" + (e.changes.note ? " (" + e.changes.note + ")" : "") + (e.changes.fields?.length ? ":" : "") }), ...asked(e.changes.fields)];
       else if (e.kind === "target") lines = [h("div", { class: "tgt", text: (e.changes.from ? "Changed the official target: " + fmt(e.changes.from) + " → " + fmt(e.changes.to) : "Set the official target: " + fmt(e.changes.to))
-        + (e.changes.plan ? " (from the project plan: the activity's end date)" : "") })];
+        + (e.changes.plan ? " (from the project plan: the activity's end date)" : e.changes.atCreate ? " (when the task was created)" : "") })];
       else lines = e.changes.map(([f, a, b]) => h("div", { text: f === "progress" ? "Updated the progress notes" : (LOG_LABEL[f] || f) + ": " + describe(f, a) + " → " + describe(f, b) }));
       box.append(h("div", { class: "ev" }, h("div", {}, h("b", { text: e.by }), h("span", { class: "mono", text: "  ·  " + fmtDT(e.at) })), lines));
     });
@@ -784,13 +788,73 @@ function proposalText(d) {
 }
 function requestTitle(r) { return "#" + String(r.no || "").padStart(3, "0") + " " + (r.title || "(deleted task)"); }
 function viewApprovals(main) {
-  const list = h("div", { class: "grid2" });
+  const list = h("div", { class: "grid2" }), fresh = h("div"), past = h("div");
   main.append(h("div", { class: "row between" }, h("h2", { text: team().name + " · approvals" }),
-    h("span", { class: "muted", text: "Proposed target dates and backdated completions wait here until you approve them." })), list);
+    h("span", { class: "muted", text: "Changed target dates and backdated completions wait here until you approve them." })),
+    h("h3", { class: "pj-sec", text: "Waiting for you" }), list,
+    h("div", { class: "panel" }, h("div", { class: "row between" }, h("h3", { text: "New tasks this week (for information)" }),
+      h("span", { class: "muted small", text: "A new task's target date counts straight away. Check it, and change it here if it's too generous." })), fresh),
+    h("div", { class: "panel" }, h("div", { class: "row between" }, h("h3", { text: "Decided requests" }),
+      h("span", { class: "muted small", text: "Approved, rejected and withdrawn requests from the last 90 days" })), past));
+  // new tasks other people created in the last 7 days, with their target date
+  const F = { page: 1, size: 10 };
+  function drawFresh() {
+    const since = isoAdd(S.today, -6), me = S.me.user.id;
+    const all = S.tasks.filter(t => t.createdAt && t.createdAt.slice(0, 10) >= since && t.createdBy !== me && t.approved && !t.imported)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    if (!all.length) return fresh.replaceChildren(h("p", { class: "muted m0", text: "No new tasks from the team in the last 7 days." }));
+    const pages = Math.max(1, Math.ceil(all.length / F.size)); F.page = Math.min(F.page, pages);
+    const rows = all.slice((F.page - 1) * F.size, F.page * F.size);
+    fresh.replaceChildren(...[h("div", { class: "tscroll" }, h("table", {},
+      h("thead", {}, h("tr", {}, ["Task", "Created by", "Created", "Lead", "Start", "Target", ""].map(c => h("th", { text: c })))),
+      h("tbody", {}, rows.map(t => {
+        const inp = h("input", { type: "date", value: t.effTarget || "", "aria-label": "Target date of task " + t.no, class: "fresh-date" });
+        const plan = !!t.projectItemId;
+        return h("tr", {},
+          h("td", {}, h("div", { class: "task-title", text: "#" + String(t.no).padStart(3, "0") + " " + t.title }), t.details ? h("div", { class: "task-det", text: t.details }) : null,
+            h("div", { class: "muted small", text: t.category + (t.customer ? " · " + t.customer : "") })),
+          h("td", { text: t.createdByName || "—" }), h("td", { class: "mono nowrap", text: fmtDT(t.createdAt) }),
+          h("td", { text: t.lead.map(personName).join(" / ") }), h("td", { class: "mono nowrap", text: fmt(t.startDate) }),
+          h("td", { class: "nowrap" }, plan ? h("span", { class: "mono", title: "From the project plan", text: fmt(t.effTarget) + " (plan)" }) : inp),
+          h("td", { class: "nowrap" }, plan ? null : h("button", { class: "btn small", text: "Change target", onclick: async e => {
+            if (!inp.value) return toast("Choose a target date.");
+            if (inp.value === t.effTarget) return toast("That is already the target date.");
+            e.target.disabled = true;
+            try { await api("PUT", "/api/tasks/" + t.id + "/target", { target: inp.value }); toast("Target of #" + t.no + " changed to " + fmt(inp.value)); await reloadTeam(); drawFresh(); }
+            catch (x) { toast(x.message); e.target.disabled = false; }
+          } }), h("button", { class: "btn small", text: "Open", onclick: () => taskSheet(t) })));
+      })))),
+      all.length > 10 ? pager(F, all.length, pages, { sizes: [10, 25, 50], label: "New task pages", redraw: drawFresh }) : null].filter(Boolean));
+  }
+  // what was decided, by whom and when (90 days), 10 a page
+  const P = { page: 1, size: 10 };
+  async function loadPast() {
+    try {
+      const r = await api("GET", "/api/teams/" + S.teamId + "/requests?scope=history");
+      const draw = () => {
+        if (!r.requests.length) return past.replaceChildren(h("p", { class: "muted m0", text: "No decisions in the last 90 days." }));
+        const pages = Math.max(1, Math.ceil(r.requests.length / P.size)); P.page = Math.min(P.page, pages);
+        past.replaceChildren(...[h("div", { class: "tscroll" }, h("table", {},
+          h("thead", {}, h("tr", {}, ["Task", "Request", "Asked by", "Sent", "Decision", "Note"].map(c => h("th", { text: c })))),
+          h("tbody", {}, r.requests.slice((P.page - 1) * P.size, P.page * P.size).map(rq => {
+            const [label, cls] = REQ_STATUS[rq.status] || [rq.status, ""];
+            const what = Object.keys(rq.proposed || {}).length ? "Proposed: " + proposalText(rq.proposed) : "";
+            return h("tr", { class: rq.taskId && S.tasks.some(x => x.id === rq.taskId) ? "click" : "", onclick: () => { const t = S.tasks.find(x => x.id === rq.taskId); if (t) taskSheet(t); } },
+              h("td", {}, h("div", { class: "task-title", text: requestTitle(rq) }), h("div", { class: "hist" }, what ? h("div", { text: what }) : changeLines(rq.changes || []))),
+              h("td", { text: reqKind(rq) }), h("td", { text: rq.by }), h("td", { class: "mono nowrap", text: fmtDT(rq.at) }),
+              h("td", {}, h("span", { class: "pill " + cls, text: label }), h("div", { class: "muted small", text: (rq.decidedBy ? rq.decidedBy + " · " : "") + fmtDT(rq.decidedAt) })),
+              h("td", { text: rq.note || "" }));
+          })))),
+          r.requests.length > 10 ? pager(P, r.requests.length, pages, { sizes: [10, 25, 50], label: "Decided request pages", redraw: draw }) : null].filter(Boolean));
+      };
+      draw();
+    } catch (e) { past.replaceChildren(h("p", { class: "bad-text", text: e.message })); }
+  }
   async function load() {
+    drawFresh(); loadPast();
     try {
       const r = await api("GET", "/api/teams/" + S.teamId + "/requests");
-      if (!r.requests.length) { list.replaceChildren(h("div", { class: "panel" }, h("p", { class: "muted m0", text: "Nothing waiting. Requests appear here when an engineer proposes a target date or completes a task with an earlier date." }))); return; }
+      if (!r.requests.length) { list.replaceChildren(h("div", { class: "panel" }, h("p", { class: "muted m0", text: "Nothing waiting. Requests appear here when an engineer changes a task's target date or completes a task with an earlier date." }))); return; }
       list.replaceChildren(...r.requests.map(rq => {
         const note = h("input", { type: "text", id: "rej-" + rq.id, maxlength: "500", placeholder: "Reason (shown to " + rq.by + ")" });
         const rejectRow = h("div", { class: "row", hidden: true }, note,

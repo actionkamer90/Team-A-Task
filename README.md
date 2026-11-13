@@ -11,8 +11,8 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
 - **Roles, enforced by the server**
   | Role | Can do |
   |---|---|
-  | Member | See their team's tasks; add tasks they lead; update the details of tasks where they are a **Lead Engineer** (saved straight away). A new or changed **target date**, and a **completion dated before today** (backdated actual date), wait for the team lead's **approval**; they follow these under *My Requests*. Support engineers see a task but can't change it. |
-  | Team lead | Change any task in their team directly; **approve or reject** proposed target dates and backdated completions (with a reason); see the **KPI dashboard**; invite and remove members; edit categories, customers and KPI settings |
+  | Member | See their team's tasks; add tasks they lead; update the details of tasks where they are a **Lead Engineer** (saved straight away). The **target date** given when a task is created counts straight away; **changing** it later, and a **completion dated before today** (backdated actual date), wait for the team lead's **approval**; they follow these under *My Requests*. Support engineers see a task but can't change it. |
+  | Team lead | Change any task in their team directly; **approve or reject** changed target dates and backdated completions (with a reason), see new tasks' target dates and the history of decisions on *Approvals*; see the **KPI dashboard**; invite and remove members; edit categories, customers and KPI settings |
   | Administrator | Everything, on every team; create teams; add team leads; give or remove administrator access and invite new administrators (*All Teams → Administrators*) |
 - **Teams are separate.** People see only the teams they belong to: no tasks, history, KPI or export
   from any other team. **One person can belong to several teams** with one login: a lead adds them

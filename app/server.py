@@ -1224,11 +1224,16 @@ def load_tasks(h, tid, approved_only=False):
     items = {r["id"]: (r["name"], r["parent_name"]) for r in h.con.execute(
         "SELECT i.id, i.name, p.name AS parent_name FROM project_items i LEFT JOIN project_items p ON p.id=i.parent_id "
         "JOIN projects pr ON pr.id=i.project_id WHERE pr.team_id=?", (tid,))}
+    # the name each task's creator uses in this team (their person record), else their account name
+    unames = {r["id"]: r["name"] for r in h.con.execute(
+        "SELECT u.id, COALESCE(p.name, u.display_name) AS name FROM users u LEFT JOIN people p ON p.user_id=u.id AND p.team_id=? "
+        "WHERE u.id IN (SELECT created_by FROM tasks WHERE team_id=?)", (tid, tid))}
     for r in h.con.execute(q, (tid,)):
         t = dict(r)
         t["lead"], t["support"] = json.loads(t["lead"]), json.loads(t["support"])
         t["_archive_days"] = days
         t["_project_name"] = pnames.get(t.get("project_id"))
+        t["_created_name"] = unames.get(t.get("created_by"))
         if t.get("project_item_id") in items:
             t["_item_name"], t["_phase_name"] = items[t["project_item_id"]]
         out.append(t)
@@ -1258,6 +1263,7 @@ def task_out(t, role, my_key, uid, td, req=None, pm_pids=()):
            "pending": not t["target"] and bool(t["requested_target"]), "actualDate": t["actual_date"], "status": status_of(t, td),
            "archived": is_archived(t, td), "canEdit": can_edit(role, my_key, t, pm_pids), "approved": bool(t["approved"]),
            "changePending": bool(req) and req["kind"] == "edit", "imported": bool(t["imported"]), "updatedAt": t["updated_at"],
+           "createdAt": t["created_at"], "createdBy": t.get("created_by"), "createdByName": t.get("_created_name"),
            "pendingFields": sorted(k for k in json.loads(req["data"]) if k in ("target", "actual_date")) if req and req["kind"] == "edit" else [],
            "projectId": t.get("project_id"), "projectItemId": t.get("project_item_id"),
            "projectName": t.get("_project_name"), "projectItemName": t.get("_item_name"), "projectPhaseName": t.get("_phase_name")}
@@ -1476,7 +1482,9 @@ def api_task_create(h, tid):
     plan_t = d.pop("plan_target", None)
     target = plan_t or d_field(h.body, "target")
     lead = role in ("lead", "admin")
-    official = lead or bool(plan_t)  # a lead's date, or the plan's, is the official target; a member's is a request
+    # The target given when a task is created is the official one, whoever creates it (a lead, a member, or the project plan).
+    # Changing it later, and completing a task with an earlier date, are what need the team lead's approval.
+    official = True
     me = h.my_person(tid)
     # a Project Manager can create tasks for anyone on a project they manage (assigning the work)
     pm_task = not lead and d["project_id"] is not None and d["project_id"] in pm_projects(h, me)
@@ -1502,8 +1510,8 @@ def api_task_create(h, tid):
         task_id = cur.lastrowid
         log(h, task_id, "create", [])
         if official and target:
-            log(h, task_id, "target", {"from": None, "to": target, "plan": True} if plan_t else {"from": None, "to": target})
-        proposal = {} if lead else {k: v for k, v in (("target", None if plan_t else target), ("actual_date", backdated)) if v}
+            log(h, task_id, "target", {"from": None, "to": target, "plan": True} if plan_t else {"from": None, "to": target, "atCreate": True})
+        proposal = {} if lead else {k: v for k, v in (("actual_date", backdated),) if v}
         if proposal:
             h.con.execute("INSERT INTO change_requests(task_id,team_id,kind,data,by_user,at,status) VALUES(?,?,?,?,?,?,'pending')",
                           (task_id, tid, "edit", json.dumps(proposal), h.user["id"], ts))
@@ -1724,11 +1732,15 @@ def request_out(h, r, tasks_by_id):
 
 @route("GET", "/api/teams/([a-z0-9-]+)/requests")
 def api_requests(h, tid):
-    """Leads: every pending request in the team. Members: their own requests from the last 30 days."""
+    """Leads: every pending request in the team (scope=history: the decided ones of the last 90 days).
+    Members: their own requests from the last 30 days."""
     role = h.need_member(tid)
     q = ("SELECT r.*, a.display_name AS by_name, b.display_name AS decided_name FROM change_requests r "
          "LEFT JOIN users a ON a.id=r.by_user LEFT JOIN users b ON b.id=r.decided_by WHERE r.team_id=? ")
-    if role in ("lead", "admin") and h.query.get("scope") != "mine":
+    if role in ("lead", "admin") and h.query.get("scope") == "history":
+        since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=90)).isoformat()
+        rows = h.con.execute(q + "AND r.status<>'pending' AND r.decided_at>? ORDER BY r.decided_at DESC, r.id DESC", (tid, since)).fetchall()
+    elif role in ("lead", "admin") and h.query.get("scope") != "mine":
         rows = h.con.execute(q + "AND r.status='pending' ORDER BY r.at", (tid,)).fetchall()
     else:
         since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)).isoformat()

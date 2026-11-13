@@ -107,11 +107,14 @@ class CustomerAndKpiTests(unittest.TestCase):
         self.assertFalse(any(e["kind"] == "target" and e["at"] == at for e in hist))  # folded into the approval
 
     def test_request_history_shows_dates(self):
-        # a member creating a task with a target: the request is in the history with its date
+        # a member proposing a target on a task that has none: the request is in the history with its date
         T = test_api.TrackerTest
         s, r, _ = T.member.req("POST", "/api/teams/automation/tasks", {"category": "Tickets", "title": "New with target", "lead": ["bob"],
-                                                                     "target": "2026-12-01", "startDate": "2026-11-01"})
-        self.assertEqual((s, r["pending"]), (200, ["target"]))
+                                                                     "startDate": "2026-11-01"})
+        t = next(x for x in T.member.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if x["id"] == r["id"])
+        body = {k: t[k] for k in ("category", "title", "urgency", "percent", "progress", "lead", "support")}
+        s, r2, _ = T.member.req("PUT", "/api/tasks/%d" % r["id"], dict(body, startDate="2026-11-01", target="2026-12-01"))
+        self.assertEqual((s, r2["pending"]), (200, ["target"]))
         hist = T.member.req("GET", "/api/tasks/%d/history" % r["id"])[1]["entries"]
         req = next(e for e in hist if e["kind"] == "request")
         self.assertEqual((req["by"], req["changes"]["fields"]), ("Bob", [["target", None, "2026-12-01"]]))
