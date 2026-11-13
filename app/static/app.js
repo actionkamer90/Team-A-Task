@@ -324,10 +324,8 @@ const SORTS = {
   actual: { label: "Actual (completed) date", get: t => t.actualDate, desc: true },
 };
 // table columns, in order, with the sort each header uses
-// [header, sort key, class]: columns are merged so the table fits the screen without scrolling sideways
-// (category under the number, support under the lead, start and done dates under the target); Sort by lists every key
-const COLUMNS = [["No", "no", "c-no"], ["Main task / project", "title", "c-title"], ["%", "pct", "c-pct num"], ["Urgency", "urgency", "c-urg"],
-  ["Customer", "customer", "c-cust"], ["Engineers", "lead", "c-eng"], ["Dates", "target", "c-dates"], ["Status", "status", "c-status"]];
+const COLUMNS = [["No", "no"], ["Category", "category"], ["Main task / project", "title"], ["%", "pct"], ["Urgency", "urgency"], ["Customer", "customer"],
+  ["Lead", "lead"], ["Support", "support"], ["Start", "start"], ["Target", "target"], ["Actual", "actual"], ["Status", "status"]];
 const SORT_DEFAULT = { tracker: { k: "status", d: 1 }, completed: { k: "actual", d: -1 } };
 S.sort = (() => {
   try { const v = JSON.parse(store.get("tt.sort") || "{}"); const ok = x => x && SORTS[x.k] && (x.d === 1 || x.d === -1);
@@ -368,26 +366,27 @@ function taskTable(list, archive) {
   const names = a => a.map(personName).join(" / ") || "—";
   const view = archive ? "completed" : "tracker", s = S.sort[view];
   if (!list.length) return h("div", { class: "empty", text: archive ? "No archived tasks match these filters." : "No tasks match these filters. Use New task to add one." });
-  return h("div", { class: "tscroll" }, h("table", { class: "tasks-fit" },
-    h("thead", {}, h("tr", {}, COLUMNS.map(([c, k, cls]) => {
+  return h("div", { class: "tscroll" }, h("table", {},
+    h("thead", {}, h("tr", {}, COLUMNS.map(([c, k], i) => {
       const on = s.k === k;
-      return h("th", { class: cls + " sortable" + (on ? " sorted" : ""), title: k === "target" ? "Target date (start and done dates below it)" : null, "aria-sort": on ? (s.d > 0 ? "ascending" : "descending") : "none" },
+      return h("th", { class: (i === 3 ? "num " : "") + "sortable" + (on ? " sorted" : ""), "aria-sort": on ? (s.d > 0 ? "ascending" : "descending") : "none" },
         h("button", { type: "button", id: "th-" + view + "-" + k, title: "Sort by " + SORTS[k].label.toLowerCase(),
           onclick: () => { sortFocus = "th-" + view + "-" + k; setSort(view, k); } }, c, h("span", { class: "arrow", "aria-hidden": "true", text: on ? (s.d > 0 ? "↑" : "↓") : "↕" })));
     }))),
     h("tbody", {}, list.map(t => h("tr", { class: "click", tabindex: "0", onclick: () => taskSheet(t), onkeydown: e => { if (e.key === "Enter") taskSheet(t); } },
-      h("td", {}, h("div", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }), h("div", { class: "task-cat", text: t.category || "—" })),
+      h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }),
+      h("td", { class: "nowrap", text: t.category || "—" }),
       h("td", {}, h("div", { class: "task-title", text: t.title }),
         t.projectName ? h("div", { class: "task-proj", text: "▸ " + t.projectName + (t.projectItemName ? " › " + (t.projectPhaseName ? t.projectPhaseName + " › " : "") + t.projectItemName : "") }) : null,
         t.details ? h("div", { class: "task-det", text: t.details }) : null,
         latestNote(t.progress) ? h("div", { class: "task-last", title: t.progress }, h("b", { text: "Latest: " }), latestNote(t.progress)) : null),
       h("td", { class: "num" }, h("div", { class: "pct" }, h("i", {}, h("em", { style: "width:" + t.percent + "%" })), h("span", { class: "mono", text: t.percent + "%" }))),
       h("td", {}, h("span", { class: "urg " + t.urgency, text: t.urgency })),
-      h("td", {}, custLabel(t.customer)),
-      h("td", {}, h("div", { text: names(t.lead) }), t.support.length ? h("div", { class: "task-sup", text: "+ " + names(t.support) }) : null),
-      h("td", {}, h("div", { class: "mono", title: "Target date" }, fmt(t.effTarget), t.pending ? h("span", { class: "pending", text: "awaiting lead" }) : null),
-        h("div", { class: "task-dates mono" }, h("span", { text: "Start " + fmt(t.startDate) })),
-        t.actualDate ? h("div", { class: "task-dates mono done" }, h("span", { text: "Done " + fmt(t.actualDate) })) : null),
+      h("td", { class: "nowrap" }, custLabel(t.customer)),
+      h("td", { class: "nowrap", text: names(t.lead) }), h("td", { class: "nowrap", text: names(t.support) }),
+      h("td", { class: "mono nowrap", text: fmt(t.startDate) }),
+      h("td", { class: "mono nowrap" }, fmt(t.effTarget), t.pending ? h("span", { class: "pending", text: "awaiting lead" }) : null),
+      h("td", { class: "mono nowrap", text: fmt(t.actualDate) }),
       h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status }),
         !t.approved ? h("span", { class: "pending", text: "new · awaiting approval" }) : t.changePending ? h("span", { class: "pending", text: pendingLabel(t.pendingFields) + " awaiting approval" }) : null))))));
 }
