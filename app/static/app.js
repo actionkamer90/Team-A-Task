@@ -291,6 +291,8 @@ function filterBar(statuses) {
     (S.projects?.projects || []).length ? sel("f-project", "Project", [["none", "No project"], ...S.projects.projects.map(p => [String(p.id), (p.client ? p.client + " · " : "") + p.name])], "project") : null,
     myKey() ? h("label", { class: "check" }, h("input", { type: "checkbox", id: "f-mine", checked: f.mine, onchange: e => { f.mine = e.target.checked; refresh(); } }), "Only my tasks") : null);
 }
+// the newest Task progress line (updates are added at the top)
+function latestNote(p) { return (p || "").split("\n").map(x => x.trim()).find(Boolean) || ""; }
 function applyFilters(list, ignoreStatus) {
   const f = S.f, q = f.q.trim().toLowerCase(), mk = myKey();
   return list.filter(t => {
@@ -298,7 +300,7 @@ function applyFilters(list, ignoreStatus) {
     if (f.mine && mk && !t.lead.includes(mk) && !t.support.includes(mk)) return false;
     if (f.status && !ignoreStatus && t.status !== f.status) return false; if (f.cat && t.category !== f.cat) return false; if (f.urg && t.urgency !== f.urg) return false;
     if (f.project && String(t.projectId || "none") !== f.project) return false;
-    if (q && ![t.title, t.customer, t.progress, t.category, t.projectName, t.projectItemName, ...t.lead.map(personName), ...t.support.map(personName)].join(" ").toLowerCase().includes(q)) return false;
+    if (q && ![t.title, t.details, t.customer, t.progress, t.category, t.projectName, t.projectItemName, ...t.lead.map(personName), ...t.support.map(personName)].join(" ").toLowerCase().includes(q)) return false;
     return true;
   });
 }
@@ -376,7 +378,8 @@ function taskTable(list, archive) {
       h("td", { class: "nowrap", text: t.category || "—" }),
       h("td", {}, h("div", { class: "task-title", text: t.title }),
         t.projectName ? h("div", { class: "task-proj", text: "▸ " + t.projectName + (t.projectItemName ? " › " + (t.projectPhaseName ? t.projectPhaseName + " › " : "") + t.projectItemName : "") }) : null,
-        t.progress ? h("div", { class: "task-prog", text: t.progress }) : null),
+        t.details ? h("div", { class: "task-det", text: t.details }) : null,
+        latestNote(t.progress) ? h("div", { class: "task-last", title: t.progress }, h("b", { text: "Latest: " }), latestNote(t.progress)) : null),
       h("td", { class: "num" }, h("div", { class: "pct" }, h("i", {}, h("em", { style: "width:" + t.percent + "%" })), h("span", { class: "mono", text: t.percent + "%" }))),
       h("td", {}, h("span", { class: "urg " + t.urgency, text: t.urgency })),
       h("td", { class: "nowrap" }, custLabel(t.customer)),
@@ -623,6 +626,8 @@ function taskSheet(t) {
   layout();
   const fUrg = h("select", { id: "t-urg", disabled: locked }, tm.urgencies.map(u => h("option", { value: u, text: u }))); fUrg.value = T.urgency;
   const fPct = h("input", { type: "number", id: "t-pct", min: "0", max: "100", step: "5", value: String(T.percent || 0), disabled: locked });
+  const fDet = h("textarea", { id: "t-det", class: "t-det", disabled: locked, maxlength: "4000", placeholder: "What the task is: scope, steps, references (e.g. SIT cases 1–12, UAT SharePoint folder /BNM/Rentas)" });
+  fDet.value = T.details || "";
   const fProg = h("textarea", { id: "t-prog", disabled: locked, maxlength: "12000", placeholder: "Latest progress, one update per line" }); fProg.value = T.progress || "";
   // New or changed lines are signed by the server on save: "[dd/mm/yyyy hh:mm Name] text"
   const addNote = h("button", { type: "button", class: "btn small", disabled: locked, text: "Add update", onclick: () => {
@@ -668,6 +673,8 @@ function taskSheet(t) {
   const body = [dl, ...banners,
     h("div", { class: "f2" }, h("label", { class: "field" }, h("span", { text: "Category" }), fCat), h("label", { class: "field" }, h("span", { text: "Urgency" }), fUrg)),
     projRow, titleRow, itemRow,
+    h("label", { class: "field" }, h("span", { text: "Task details" }), fDet,
+      locked ? null : h("small", { class: "muted", text: "Stays as written: it isn't signed or dated. Use Task progress below for updates." })),
     h("label", { class: "field" }, h("span", { text: "Customer" }), (() => {
       const ico = h("span", { class: "cust-slot" }, custIcon(fCust.value));
       fCust.addEventListener("input", () => ico.replaceChildren(custIcon(fCust.value.trim()) || ""));
@@ -694,7 +701,7 @@ function taskSheet(t) {
     if (!leads.length) return toast("Choose at least one Lead Engineer.");
     const myPm = pr && pr.canEdit;  // the project's manager can set anyone as lead engineer on its tasks
     if (!lead && !myPm && !leads.includes(mk)) return toast("Keep yourself as a Lead Engineer. You can only manage tasks you lead.");
-    const data = { category: fCat.value, title: pr ? pr.name : fTitle.value, customer: fCust.value, urgency: fUrg.value, percent: Number(fPct.value) || 0, progress: fProg.value,
+    const data = { category: fCat.value, title: pr ? pr.name : fTitle.value, details: fDet.value, customer: fCust.value, urgency: fUrg.value, percent: Number(fPct.value) || 0, progress: fProg.value,
       lead: leads, support: fSup.value(), startDate: fStart.value || null, actualDate: fActual.value || null,
       ...(fTarget.dataset.plan ? {} : { target: fTarget.value || null }),
       projectId: pid ? Number(pid) : null, projectItemId: pid && fItem.value ? Number(fItem.value) : null };
@@ -719,7 +726,7 @@ function taskSheet(t) {
   }
   openSheet(isNew ? "New task" : "Task #" + String(t.no).padStart(3, "0"), body, foot);
 }
-const LOG_LABEL = { category: "Category", title: "Main task", customer: "Customer", urgency: "Urgency", percent: "Task percentage", lead: "Lead engineer",
+const LOG_LABEL = { category: "Category", title: "Main task", details: "Task details", customer: "Customer", urgency: "Urgency", percent: "Task percentage", lead: "Lead engineer",
   support: "Support engineer", start_date: "Start date", requested_target: "Requested target", actual_date: "Actual date", target: "Target date",
   project_id: "Project", project_item_id: "Project activity" };
 function describe(f, v) {

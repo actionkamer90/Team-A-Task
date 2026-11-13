@@ -298,7 +298,7 @@ function planTable(pr, setStatus, ui) {
         h("td", { class: "nowrap" }, h("b", { text: t.lead.map(personName).join(" / ") }), t.support.length ? h("span", { class: "muted", text: " + " + t.support.map(personName).join(", ") }) : null),
         h("td", { class: "mono nowrap", text: fmt(t.target) }),
         h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status })),
-        h("td", { class: "pj-note", text: t.lastNote || "No progress written yet." }),
+        h("td", { class: "pj-note" }, t.details ? h("div", { class: "task-det", text: t.details }) : null, h("div", { text: t.lastNote || "No progress written yet." })),
         h("td", { class: "num" }, h("button", { class: "btn small", text: "Open", onclick: () => { const x = S.tasks.find(y => y.id === t.id); if (x) taskSheet(x); } }))))))));
   pr.phases.forEach((ph, pi) => {
     const r = (no, it, type, isPh) => h("tr", { class: (isPh ? "pj-phase-row" : "") + (!isPh && it.tasks && it.tasksDone === it.tasks && it.status !== "Completed" ? " pj-ready" : "") + (ui.open.has(it.id) ? " pj-open" : "") },
@@ -333,7 +333,7 @@ function linkedTasks(pr, hl) {
     const rows = list.slice((A.page - 1) * A.size, A.page * A.size);
     box.replaceChildren(...[h("div", { class: "tscroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["No", "Task", "Activity", "Lead", "Target", "Completed", "Status"].map(c => h("th", { text: c })))),
       h("tbody", {}, rows.map(t => h("tr", { class: "click" + (t.actualDate ? " pj-task-done" : "") + (hl.has(t.itemId) ? " pj-hl" : ""), onclick: () => { const x = S.tasks.find(y => y.id === t.id); if (x) taskSheet(x); } },
-        h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }), h("td", { text: t.title }), h("td", { class: "small", text: names[t.itemId] || "—" }),
+        h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }), h("td", {}, h("div", { text: t.title }), t.details ? h("div", { class: "task-det", text: t.details }) : null), h("td", { class: "small", text: names[t.itemId] || "—" }),
         h("td", { class: "nowrap", text: t.lead.map(personName).join(" / ") }),
         h("td", { class: "mono nowrap", text: fmt(t.target) }), h("td", { class: "mono nowrap", text: fmt(t.actualDate) }),
         h("td", {}, h("span", { class: "pill " + (STATUS_CLASS[t.status] || ""), text: t.status }))))))),

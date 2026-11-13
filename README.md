@@ -44,6 +44,9 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
   engineer can't also be picked as Support. The Engineer filter lists current team members only.
 - **Customer icons.** Every customer name has a small icon: a coloured badge with its initials, or a logo a
   team lead uploads in *Team settings* (stored as a 64 × 64 PNG in the database).
+- **Task details.** Each task has a *Task details* box for what the task is (scope, steps, references), separate
+  from *Task progress*. The Tracker shows the details under the task's name and the latest progress line under them.
+  Exports put it in the last column, so columns A–M still match the team's workbook.
 - **Signed progress notes.** When someone saves a task, every new or changed line in Task progress is
   signed at the start with the date, time and their name, e.g. `[11/11/2026 10:33 Khaidir] Log collected`.
 - **Archived tasks are locked for members.** Only the team lead (or an administrator) can change a task

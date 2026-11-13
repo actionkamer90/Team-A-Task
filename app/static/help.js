@@ -96,6 +96,7 @@ function helpGuide(isAdmin) {
       sec("update", "Adding and updating tasks",
         steps([
           ["Click ", B("+ New task"), ". Fill in the main task, category, urgency, customer, Lead and Support engineers, start date and target date."],
+          ["Describe the work in ", B("Task details"), ": what the task is, its scope, steps and references. It stays as written (it isn't signed), and the Tracker shows it under the task's name. Anyone who can change the task can edit it; changes show in the history."],
           ["Write progress in ", B("Task progress"), ", one update per line. ", B("Add update"), " starts a new line at the top. When you save, every new or changed line is signed automatically at the start, for example ", C("[11/11/2026 10:33 Khaidir] Log collected"), ". Lines you didn't touch keep their original signature."],
           ["Move the percentage as work goes on."],
           ["When the work is done, set the ", B("Actual date"), ". The task moves to the Archive after the number of days your team lead has set (2 unless changed)."],

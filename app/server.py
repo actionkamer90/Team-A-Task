@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS invites(
   created_by INTEGER, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT);
 CREATE TABLE IF NOT EXISTS tasks(
   id INTEGER PRIMARY KEY, team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE, no INTEGER NOT NULL,
-  category TEXT NOT NULL, title TEXT NOT NULL, progress TEXT NOT NULL DEFAULT '', percent INTEGER NOT NULL DEFAULT 0,
+  category TEXT NOT NULL, title TEXT NOT NULL, details TEXT NOT NULL DEFAULT '', progress TEXT NOT NULL DEFAULT '', percent INTEGER NOT NULL DEFAULT 0,
   urgency TEXT NOT NULL, customer TEXT NOT NULL DEFAULT '', lead TEXT NOT NULL DEFAULT '[]', support TEXT NOT NULL DEFAULT '[]',
   start_date TEXT, requested_target TEXT, target TEXT, target_set_by INTEGER, target_set_at TEXT, actual_date TEXT,
   created_by INTEGER, created_at TEXT NOT NULL, updated_by INTEGER, updated_at TEXT NOT NULL, imported INTEGER NOT NULL DEFAULT 0,
@@ -174,6 +174,8 @@ def init_db():
     task_cols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)")}
     if "project_id" not in task_cols:  # daily tasks can name a project and one of its activities
         con.execute("ALTER TABLE tasks ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
+    if "details" not in task_cols:  # what the task is (scope, steps); Task progress holds the dated updates
+        con.execute("ALTER TABLE tasks ADD COLUMN details TEXT NOT NULL DEFAULT ''")
     if "project_item_id" not in task_cols:
         con.execute("ALTER TABLE tasks ADD COLUMN project_item_id INTEGER REFERENCES project_items(id) ON DELETE SET NULL")
     cols = {r["name"] for r in con.execute("PRAGMA table_info(tasks)")}
@@ -1175,7 +1177,7 @@ def pm_projects(h, me):
 
 
 def task_out(t, role, my_key, uid, td, req=None, pm_pids=()):
-    out = {"id": t["id"], "no": t["no"], "category": t["category"], "title": t["title"], "progress": t["progress"], "percent": t["percent"],
+    out = {"id": t["id"], "no": t["no"], "category": t["category"], "title": t["title"], "details": t.get("details") or "", "progress": t["progress"], "percent": t["percent"],
            "urgency": t["urgency"], "customer": t["customer"], "lead": t["lead"], "support": t["support"], "startDate": t["start_date"],
            "requestedTarget": t["requested_target"], "target": t["target"], "effTarget": t["target"] or t["requested_target"],
            "pending": not t["target"] and bool(t["requested_target"]), "actualDate": t["actual_date"], "status": status_of(t, td),
@@ -1200,7 +1202,7 @@ def api_tasks(h, tid):
             "pendingApprovals": len(reqs) if role in ("lead", "admin") else None}
 
 
-TASK_FIELDS = [("category", "Category"), ("title", "Main task"), ("customer", "Customer"), ("urgency", "Urgency"), ("percent", "Task percentage"),
+TASK_FIELDS = [("category", "Category"), ("title", "Main task"), ("details", "Task details"), ("customer", "Customer"), ("urgency", "Urgency"), ("percent", "Task percentage"),
                ("progress", "Task progress"), ("lead", "Lead engineer"), ("support", "Support engineer"), ("start_date", "Start date"),
                ("actual_date", "Actual date"), ("project_id", "Project"), ("project_item_id", "Project activity")]
 
@@ -1268,7 +1270,7 @@ def parse_task(h, tid, body, team):
         pct = int(body.get("percent") or 0)
     except (TypeError, ValueError):
         raise bad("Task percentage must be a number.")
-    d = {"category": cat, "title": s_field(body, "title", 200, True), "customer": s_field(body, "customer", 100),
+    d = {"category": cat, "title": s_field(body, "title", 200, True), "details": s_field(body, "details", DETAILS_MAX), "customer": s_field(body, "customer", 100),
          "urgency": urg, "percent": max(0, min(100, pct)), "progress": s_field(body, "progress", PROGRESS_MAX),
          "lead": ppl("lead"), "support": ppl("support", outside_ok=True), "start_date": d_field(body, "startDate"), "actual_date": d_field(body, "actualDate")}
     if not d["lead"]:
@@ -1355,6 +1357,7 @@ def proposal_fields(t, proposal):
 SIGN_START_RE = re.compile(r"^\[(\d{2}/\d{2}/\d{4} \d{2}:\d{2}) ([^\]]{1,60})\] ")
 SIGN_END_RE = re.compile(r"\s+— ([^()\n]{1,60}) \((\d{2}/\d{2}/\d{4} \d{2}:\d{2})\)$")  # end-of-line format used briefly; converted on save
 PROGRESS_MAX = 12000
+DETAILS_MAX = 4000
 
 
 def signer_name(h, tid):
@@ -1415,10 +1418,10 @@ def api_task_create(h, tid):
     with Tx(h.con):
         no = (h.con.execute("SELECT MAX(no) FROM tasks WHERE team_id=?", (tid,)).fetchone()[0] or 0) + 1
         cur = h.con.execute(
-            "INSERT INTO tasks(team_id,no,category,title,progress,percent,urgency,customer,lead,support,start_date,requested_target,"
+            "INSERT INTO tasks(team_id,no,category,title,details,progress,percent,urgency,customer,lead,support,start_date,requested_target,"
             "target,target_set_by,target_set_at,actual_date,created_by,created_at,updated_by,updated_at,approved,project_id,project_item_id) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (tid, no, d["category"], d["title"], d["progress"], d["percent"], d["urgency"], d["customer"], json.dumps(d["lead"]),
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (tid, no, d["category"], d["title"], d["details"], d["progress"], d["percent"], d["urgency"], d["customer"], json.dumps(d["lead"]),
              json.dumps(d["support"]), d["start_date"], target, target if official else None, h.user["id"] if official and target else None,
              ts if official and target else None, d["actual_date"], h.user["id"], ts, h.user["id"], ts, 1, d["project_id"], d["project_item_id"]))
         task_id = cur.lastrowid
@@ -1943,12 +1946,12 @@ def api_project(h, pid):
     out = project_out(h, p, detail=True)
     out["canEdit"], out["canDelete"] = edit, role in ("lead", "admin")
     tasks = h.con.execute("SELECT t.id, t.no, t.title, t.lead, t.support, t.project_item_id, t.actual_date, t.target, t.requested_target, "
-                          "t.start_date, t.created_at, t.progress FROM tasks t "
+                          "t.start_date, t.created_at, t.progress, t.details FROM tasks t "
                           "WHERE t.project_id=? ORDER BY t.no", (p["id"],)).fetchall()
     out["tasks"] = [{"id": t["id"], "no": t["no"], "title": t["title"], "lead": json.loads(t["lead"]), "itemId": t["project_item_id"],
                      "target": t["target"] or t["requested_target"], "actualDate": t["actual_date"], "status": status_of(t),
                      "support": json.loads(t["support"]), "startDate": t["start_date"] or (t["created_at"] or "")[:10] or None,
-                     "lastNote": next((ln.strip() for ln in (t["progress"] or "").splitlines() if ln.strip()), "")[:300]} for t in tasks]
+                     "details": t["details"], "lastNote": next((ln.strip() for ln in (t["progress"] or "").splitlines() if ln.strip()), "")[:300]} for t in tasks]
     return out
 
 
@@ -2198,16 +2201,17 @@ def api_export(h, tid):
     names = {p["key"]: p["name"] for p in ppl}
     td = today()
     head = ["Task No", "Categories", "Main Task / Project", "Task Progress", "Task Percentage", "Urgency", "Customer", "Lead Engineer",
-            "Support Engineer", "Start Date", "Target Date", "Actual Date", "Status", "Target Approved"]
+            "Support Engineer", "Start Date", "Target Date", "Actual Date", "Status", "Target Approved", "Task Details"]  # columns A-M as in the team's workbook
     nm = lambda a: " / ".join(k[len(OUTSIDE):] if is_outside(k) else names.get(k, k) for k in a)
 
     def rows(lst):
         return [head] + [[t["no"], t["category"], t["title"], t["progress"], t["percent"] / 100, t["urgency"], t["customer"], nm(t["lead"]),
                           nm(t["support"]), xlsx.Date(t["start_date"]), xlsx.Date(t["target"] or t["requested_target"]), xlsx.Date(t["actual_date"]),
-                          status_of(t, td), "New task awaiting approval" if not t["approved"] else "" if not (t["target"] or t["requested_target"]) else ("Yes" if t["target"] else "Awaiting lead")]
+                          status_of(t, td), "New task awaiting approval" if not t["approved"] else "" if not (t["target"] or t["requested_target"]) else ("Yes" if t["target"] else "Awaiting lead"),
+                          t["details"]]
                          for t in lst]
     fmt = {4: "pct"}
-    widths = [8, 11, 34, 50, 10, 9, 18, 16, 18, 11, 11, 11, 17, 13]
+    widths = [8, 11, 34, 50, 10, 9, 18, 16, 18, 11, 11, 11, 17, 13, 50]
     sheets = [xlsx.Sheet("Daily Task Tracker", rows([t for t in tasks if not is_archived(t, td)]), widths, fmt),
               xlsx.Sheet("Archive", rows([t for t in tasks if is_archived(t, td)]), widths, fmt)]
     if role in ("lead", "admin"):

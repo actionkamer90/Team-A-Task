@@ -209,6 +209,29 @@ class TrackerTest(unittest.TestCase):
         self.assertIn("xl/worksheets/sheet4.xml", z.namelist())
         self.assertIn(b"KPI Scorecard", z.read("xl/workbook.xml"))
 
+    def test_task_details(self):
+        body = {"category": "Tickets", "title": "Report incomplete", "lead": ["bob"], "startDate": "2026-11-01",
+                "details": "Daily report stops at 03:00.\nCheck the job chain.", "progress": "Log collected"}
+        s, r, _ = self.member.req("POST", "/api/teams/automation/tasks", body)
+        self.assertEqual(s, 200, r)
+        task = lambda: next(x for x in self.member.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if x["id"] == r["id"])
+        t = task()
+        self.assertEqual(t["details"], "Daily report stops at 03:00.\nCheck the job chain.")  # kept as written, not signed
+        self.assertTrue(t["progress"].startswith("["))                                       # progress is signed
+        upd = {k: t[k] for k in ("category", "title", "urgency", "percent", "progress", "lead", "support")}
+        upd.update(startDate=t["startDate"], details="Daily report stops at 03:00. Fixed filter.")
+        self.assertEqual(self.member.req("PUT", "/api/tasks/%d" % r["id"], upd)[0], 200)
+        self.assertEqual(task()["details"], "Daily report stops at 03:00. Fixed filter.")
+        hist = self.member.req("GET", "/api/tasks/%d/history" % r["id"])[1]["entries"]
+        self.assertTrue(any(c[0] == "details" for e in hist if e["kind"] == "edit" for c in e["changes"]))
+        self.assertEqual(self.member.req("PUT", "/api/tasks/%d" % r["id"], dict(upd, details="x" * 4001))[0], 400)  # too long
+        # the export keeps columns A-M of the team's workbook and adds Task Details at the end
+        s, data, _ = self.member.req("GET", "/api/teams/automation/export.xlsx", raw=True)
+        sheet = zipfile.ZipFile(io.BytesIO(data)).read("xl/worksheets/sheet1.xml").decode()
+        self.assertIn("Fixed filter", sheet)
+        self.assertIn('r="O1"', sheet)
+        self.lead.req("DELETE", "/api/tasks/%d" % r["id"])
+
     def test_people_rules(self):
         # a lead cannot create another lead or touch a lead's record
         s, r, _ = self.lead.req("POST", "/api/teams/automation/people", {"name": "New Lead", "role": "lead"})

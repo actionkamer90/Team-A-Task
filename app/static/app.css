@@ -83,6 +83,10 @@ tbody tr:last-child td{border-bottom:0}
 tbody tr.click{cursor:pointer} tbody tr.click:hover td{background:var(--surface-2)}
 td.num,th.num{text-align:right}
 .task-title{font-weight:600;min-width:200px}
+.task-det{font-size:12.5px;white-space:pre-line;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:420px;margin-top:2px;opacity:.88}
+.task-last{color:var(--muted);font-size:12px;margin-top:3px;max-width:420px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.task-last b{font-weight:600}
+textarea.t-det{min-height:84px}
 .task-prog{color:var(--muted);font-size:12px;white-space:pre-line;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:380px}
 .nowrap{white-space:nowrap}
 tr.total td{font-weight:600;background:var(--surface-2)}
