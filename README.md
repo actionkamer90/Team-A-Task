@@ -20,7 +20,8 @@ A self-hosted daily task tracker for multiple teams. It replaces the Excel templ
   then switch teams at the top of the page. Their role can differ per team.
 - **Target dates.** Until the lead approves, a member's proposed date on a task with no official target
   shows as "awaiting lead"; on a task with an official target, the official date stays in force.
-- **Multiple teams.** Each team has its own people, categories, customers and KPI settings.
+- **Multiple teams.** Each team has its own people, categories, customers and KPI settings. Team leads and
+  administrators add, rename, reorder or remove task categories in *Team & Invites → Team settings*.
 - **Daily tasks.** Status is calculated from the target and actual dates, as in the workbook:
   On-Going, Delay, No Target, Completed Early, Completed On Time, Completed Late.
 - **Delete a team (administrators).** *All Teams → Delete*, then type the team's name to confirm. Its tasks,

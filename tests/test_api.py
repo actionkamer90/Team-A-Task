@@ -209,6 +209,35 @@ class TrackerTest(unittest.TestCase):
         self.assertIn("xl/worksheets/sheet4.xml", z.namelist())
         self.assertIn(b"KPI Scorecard", z.read("xl/workbook.xml"))
 
+    def test_categories(self):
+        url = "/api/teams/automation/categories"
+        self.assertEqual(self.member.req("POST", url, {"name": "Maintenance"})[0], 403)  # leads and admins only
+        s, r, _ = self.lead.req("POST", url, {"name": "  Maintenance "})
+        self.assertEqual((s, r["categories"][-1]), (200, "Maintenance"))
+        team = self.member.req("GET", "/api/teams/automation")[1]
+        self.assertEqual(team["categoryUse"]["Maintenance"], 0)
+        self.assertEqual(self.lead.req("POST", url, {"name": "maintenance"})[0], 400)     # already there
+        # a task uses it; renaming renames the task's category, removing is refused
+        s, t, _ = self.member.req("POST", "/api/teams/automation/tasks", {"category": "Maintenance", "title": "Patch", "lead": ["bob"], "startDate": "2026-11-13"})
+        self.assertEqual(s, 200, t)
+        s, r, _ = self.lead.req("PUT", url, {"name": "Maintenance", "to": "Maintenance & Patching"})
+        self.assertEqual((s, r["tasksUpdated"]), (200, 1))
+        task = next(x for x in self.member.req("GET", "/api/teams/automation/tasks")[1]["tasks"] if x["id"] == t["id"])
+        self.assertEqual(task["category"], "Maintenance & Patching")
+        self.assertEqual(self.lead.req("DELETE", url + "?name=Maintenance%20%26%20Patching")[0], 400)
+        # move up, then remove once no task uses it
+        cats = self.lead.req("PUT", url, {"name": "Maintenance & Patching", "move": -1})[1]["categories"]
+        self.assertEqual(cats[-2], "Maintenance & Patching")
+        self.lead.req("DELETE", "/api/tasks/%d" % t["id"])
+        s, r, _ = self.lead.req("DELETE", url + "?name=Maintenance%20%26%20Patching")
+        self.assertEqual(s, 200, r)
+        self.assertNotIn("Maintenance & Patching", r["categories"])
+        # saving the other team settings doesn't touch the categories
+        cur = self.lead.req("GET", "/api/teams/automation")[1]
+        before = cur["categories"]
+        self.assertEqual(self.lead.req("PUT", "/api/teams/automation", {"name": cur["name"], "customers": cur["customers"]})[0], 200)
+        self.assertEqual(self.lead.req("GET", "/api/teams/automation")[1]["categories"], before)
+
     def test_task_details(self):
         body = {"category": "Tickets", "title": "Report incomplete", "lead": ["bob"], "startDate": "2026-11-01",
                 "details": "Daily report stops at 03:00.\nCheck the job chain.", "progress": "Log collected"}

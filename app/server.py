@@ -897,7 +897,8 @@ def api_team(h, tid):
             p.pop("inviteExpires")
     logos = {r["name"]: "/api/teams/%s/logos/%d?v=%s" % (tid, r["id"], re.sub(r"\D", "", r["updated_at"]))
              for r in h.con.execute("SELECT id, name, updated_at FROM customer_logos WHERE team_id=?", (tid,))}
-    return {"id": t["id"], "name": t["name"], "categories": t["categories"], "customers": t["customers"], "kpi": dict(DEFAULT_KPI, **t["kpi"]),
+    use = {r["category"]: r["n"] for r in h.con.execute("SELECT category, COUNT(*) AS n FROM tasks WHERE team_id=? GROUP BY category", (tid,))}
+    return {"id": t["id"], "name": t["name"], "categories": t["categories"], "categoryUse": {c: use.get(c, 0) for c in t["categories"]}, "customers": t["customers"], "kpi": dict(DEFAULT_KPI, **t["kpi"]),
             "role": role, "myKey": me["key"] if me else None, "people": ppl, "urgencies": URGENCIES, "logos": logos,
             "archiveDays": team_archive_days(h.con, tid), "archiveDaysDefault": ARCHIVE_DAYS,
             "isPm": bool(me and me.get("is_pm")) if isinstance(me, dict) else False, "canCreateProjects": can_create_projects(h, tid)}
@@ -992,7 +993,7 @@ def api_team_update(h, tid):
     h.need_lead(tid)
     t = h.team(tid)
     name = s_field(h.body, "name", 80, True, t["name"])
-    cats = list_field(h.body, "categories", 30, 60) if "categories" in h.body else t["categories"]
+    cats = list_field(h.body, "categories", CATEGORIES_MAX, 60) if "categories" in h.body else t["categories"]
     custs = list_field(h.body, "customers", 300, 100) if "customers" in h.body else t["customers"]
     if not cats:
         raise bad("Add at least one category.")
@@ -1025,6 +1026,80 @@ def api_team_update(h, tid):
         h.con.execute("UPDATE teams SET name=?, categories=?, customers=?, kpi=?, archive_days=? WHERE id=?",
                       (name, json.dumps(cats), json.dumps(custs), json.dumps(kpi), days, tid))
     return {"ok": True}
+
+
+CATEGORIES_MAX = 50
+
+
+def _category_name(h, key="name"):
+    v = h.body.get(key)
+    name = re.sub(r"\s+", " ", v).strip() if isinstance(v, str) else ""
+    if not name:
+        raise bad("Type the category's name.")
+    if len(name) > 60:
+        raise bad("A category name can be at most 60 characters.")
+    return name
+
+
+@route("POST", "/api/teams/([a-z0-9-]+)/categories")
+def api_category_add(h, tid):
+    """Add one task category (team lead or administrator)."""
+    h.need_lead(tid)
+    t = h.team(tid)
+    name = _category_name(h)
+    if any(c.lower() == name.lower() for c in t["categories"]):
+        raise bad("This team already has the category %s." % next(c for c in t["categories"] if c.lower() == name.lower()))
+    if len(t["categories"]) >= CATEGORIES_MAX:
+        raise bad("A team can have at most %d categories." % CATEGORIES_MAX)
+    with Tx(h.con):
+        h.con.execute("UPDATE teams SET categories=? WHERE id=?", (json.dumps(t["categories"] + [name]), tid))
+    return {"ok": True, "categories": t["categories"] + [name]}
+
+
+@route("PUT", "/api/teams/([a-z0-9-]+)/categories")
+def api_category_rename(h, tid):
+    """Rename a category, or move it up or down: {name, to} or {name, move: -1|1}. Renaming updates the team's tasks too."""
+    h.need_lead(tid)
+    t = h.team(tid)
+    cats = list(t["categories"])
+    old = h.body.get("name")
+    if old not in cats:
+        raise bad("That category no longer exists. Reload the page.")
+    i = cats.index(old)
+    if "move" in h.body:
+        j = i + (1 if h.body.get("move") == 1 else -1)
+        if 0 <= j < len(cats):
+            cats[i], cats[j] = cats[j], cats[i]
+        with Tx(h.con):
+            h.con.execute("UPDATE teams SET categories=? WHERE id=?", (json.dumps(cats), tid))
+        return {"ok": True, "categories": cats}
+    new = _category_name(h, "to")
+    if any(c.lower() == new.lower() and c != old for c in cats):
+        raise bad("This team already has the category %s." % new)
+    cats[i] = new
+    with Tx(h.con):
+        h.con.execute("UPDATE teams SET categories=? WHERE id=?", (json.dumps(cats), tid))
+        n = h.con.execute("UPDATE tasks SET category=? WHERE team_id=? AND category=?", (new, tid, old)).rowcount
+    return {"ok": True, "categories": cats, "tasksUpdated": n}
+
+
+@route("DELETE", "/api/teams/([a-z0-9-]+)/categories")
+def api_category_delete(h, tid):
+    """Remove a category no task uses (?name=...). One category must remain."""
+    h.need_lead(tid)
+    t = h.team(tid)
+    name = h.query.get("name") or ""
+    if name not in t["categories"]:
+        raise bad("That category no longer exists. Reload the page.")
+    if len(t["categories"]) == 1:
+        raise bad("A team needs at least one category.")
+    n = h.con.execute("SELECT COUNT(*) FROM tasks WHERE team_id=? AND category=?", (tid, name)).fetchone()[0]
+    if n:
+        raise bad("%d task%s use%s %s, so it can't be removed. Rename it instead, or change those tasks first." % (n, "" if n == 1 else "s", "s" if n == 1 else "", name))
+    cats = [c for c in t["categories"] if c != name]
+    with Tx(h.con):
+        h.con.execute("UPDATE teams SET categories=? WHERE id=?", (json.dumps(cats), tid))
+    return {"ok": True, "categories": cats}
 
 
 def check_role_change(h, tid, role, person=None):

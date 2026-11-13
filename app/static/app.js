@@ -366,7 +366,9 @@ function taskTable(list, archive) {
   const names = a => a.map(personName).join(" / ") || "—";
   const view = archive ? "completed" : "tracker", s = S.sort[view];
   if (!list.length) return h("div", { class: "empty", text: archive ? "No archived tasks match these filters." : "No tasks match these filters. Use New task to add one." });
-  return h("div", { class: "tscroll" }, h("table", {},
+  // all 12 columns, with fixed widths so they fit the screen: the task column takes the rest and long text wraps
+  return h("div", { class: "tscroll" }, h("table", { class: "tasks-12" },
+    h("colgroup", {}, COLUMNS.map(([, k]) => h("col", { class: "w-" + k }))),
     h("thead", {}, h("tr", {}, COLUMNS.map(([c, k], i) => {
       const on = s.k === k;
       return h("th", { class: (i === 3 ? "num " : "") + "sortable" + (on ? " sorted" : ""), "aria-sort": on ? (s.d > 0 ? "ascending" : "descending") : "none" },
@@ -375,15 +377,15 @@ function taskTable(list, archive) {
     }))),
     h("tbody", {}, list.map(t => h("tr", { class: "click", tabindex: "0", onclick: () => taskSheet(t), onkeydown: e => { if (e.key === "Enter") taskSheet(t); } },
       h("td", { class: "mono muted", text: "#" + String(t.no).padStart(3, "0") }),
-      h("td", { class: "nowrap", text: t.category || "—" }),
+      h("td", { text: t.category || "—" }),
       h("td", {}, h("div", { class: "task-title", text: t.title }),
         t.projectName ? h("div", { class: "task-proj", text: "▸ " + t.projectName + (t.projectItemName ? " › " + (t.projectPhaseName ? t.projectPhaseName + " › " : "") + t.projectItemName : "") }) : null,
         t.details ? h("div", { class: "task-det", text: t.details }) : null,
         latestNote(t.progress) ? h("div", { class: "task-last", title: t.progress }, h("b", { text: "Latest: " }), latestNote(t.progress)) : null),
       h("td", { class: "num" }, h("div", { class: "pct" }, h("i", {}, h("em", { style: "width:" + t.percent + "%" })), h("span", { class: "mono", text: t.percent + "%" }))),
       h("td", {}, h("span", { class: "urg " + t.urgency, text: t.urgency })),
-      h("td", { class: "nowrap" }, custLabel(t.customer)),
-      h("td", { class: "nowrap", text: names(t.lead) }), h("td", { class: "nowrap", text: names(t.support) }),
+      h("td", {}, custLabel(t.customer)),
+      h("td", { text: names(t.lead) }), h("td", { text: names(t.support) }),
       h("td", { class: "mono nowrap", text: fmt(t.startDate) }),
       h("td", { class: "mono nowrap" }, fmt(t.effTarget), t.pending ? h("span", { class: "pending", text: "awaiting lead" }) : null),
       h("td", { class: "mono nowrap", text: fmt(t.actualDate) }),
@@ -1025,23 +1027,65 @@ function archiveRuleText() {
   const d = team()?.archiveDays ?? S.me.archiveDays ?? 2;
   return d === 0 ? "Tasks move here on their actual (completed) date." : "Tasks move here " + d + " day" + (d === 1 ? "" : "s") + " after their actual (completed) date.";
 }
+/* Task categories of a team: each change saves straight away (add, rename, move, remove) */
+function categoryEditor(tid) {
+  const box = h("div", { class: "field cat-ed" }), err = h("p", { class: "bad-text small m0", role: "alert" });
+  let T = null;
+  const call = async (method, body, q) => {
+    err.textContent = "";
+    try {
+      await api(method, "/api/teams/" + tid + "/categories" + (q || ""), body);
+      await load();
+      if (S.teamId === tid) { S.team = await api("GET", "/api/teams/" + tid); }
+      return true;
+    } catch (e) { err.textContent = e.message; return false; }
+  };
+  const load = async () => { T = await api("GET", "/api/teams/" + tid); draw(); };
+  const draw = () => {
+    const add = h("input", { type: "text", id: "cat-new", maxlength: "60", placeholder: "New category, e.g. Maintenance", "aria-label": "New category" });
+    const doAdd = async () => { if (!add.value.trim()) { err.textContent = "Type the category's name."; return add.focus(); } if (await call("POST", { name: add.value })) { toast("Category added"); document.getElementById("cat-new")?.focus(); } };
+    add.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); doAdd(); } });
+    box.replaceChildren(h("span", { class: "lbl", text: "Task categories" }),
+      h("div", { class: "cat-list" }, T.categories.map((c, i) => {
+        const n = T.categoryUse?.[c] || 0;
+        const inp = h("input", { type: "text", value: c, maxlength: "60", "aria-label": "Rename " + c,
+          onchange: async () => { const to = inp.value.trim(); if (!to || to === c) { inp.value = c; return; }
+            if (await call("PUT", { name: c, to })) toast(n ? "Renamed. " + n + " task" + (n === 1 ? "" : "s") + " updated." : "Renamed"); else inp.value = c; } });
+        return h("div", { class: "cat-row" }, inp,
+          h("span", { class: "muted small nowrap", text: n + " task" + (n === 1 ? "" : "s") }),
+          h("button", { class: "btn small", type: "button", text: "↑", "aria-label": "Move " + c + " up", disabled: i === 0, onclick: () => call("PUT", { name: c, move: -1 }) }),
+          h("button", { class: "btn small", type: "button", text: "↓", "aria-label": "Move " + c + " down", disabled: i === T.categories.length - 1, onclick: () => call("PUT", { name: c, move: 1 }) }),
+          h("button", { class: "btn small danger", type: "button", text: "Remove", disabled: !!n || T.categories.length === 1,
+            title: n ? "Used by " + n + " task" + (n === 1 ? "" : "s") + ": rename it instead" : "", onclick: () => call("DELETE", null, "?name=" + encodeURIComponent(c)) }));
+      })),
+      h("div", { class: "cat-row" }, add, h("button", { class: "btn small primary", type: "button", text: "+ Add category", onclick: doAdd })),
+      err,
+      h("small", { class: "muted", text: "Changes save straight away. Renaming a category renames it on its tasks too. A category used by tasks can't be removed." }));
+  };
+  box.append(h("p", { class: "muted small m0", text: "Loading categories…" }));
+  load().catch(e => { err.textContent = e.message; box.replaceChildren(err); });
+  return box;
+}
 function teamSheet(tm) {
   const isNew = !tm;
   const fName = h("input", { type: "text", id: "tm-name", value: tm?.name || "", maxlength: "80", placeholder: "e.g. Team Network" });
+  const sErr = h("p", { class: "bad-text m0", role: "alert" });
   const fCats = h("textarea", { id: "tm-cats" }); fCats.value = (tm?.categories || DEFAULT_CATS).join("\n");
   const fCust = h("textarea", { id: "tm-cust" }); fCust.value = (tm?.customers || []).join("\n");
   const fArch = h("input", { type: "number", id: "tm-archive", min: "0", max: "90", step: "1", inputmode: "numeric",
     value: String(tm?.archiveDays ?? tm?.archiveDaysDefault ?? 2) });
   openSheet(isNew ? "Create team" : "Team settings", [h("label", { class: "field" }, h("span", { text: "Team name" }), fName),
-    h("label", { class: "field" }, h("span", { text: "Task categories (one per line)" }), fCats),
+    isNew ? h("label", { class: "field" }, h("span", { text: "Task categories (one per line)" }), fCats) : categoryEditor(tm.id),
     h("label", { class: "field" }, h("span", { text: "Customers (one per line, offered as suggestions)" }), fCust),
     isNew ? null : h("label", { class: "field" }, h("span", { text: "Move completed tasks to the Archive after (days)" }), fArch,
       h("small", { class: "muted", text: "Counted from the actual (completed) date, 0 to 90 days. 0 moves a task to the Archive as soon as it is completed. Once archived, only the team lead can change a task. The server default is " + (tm?.archiveDaysDefault ?? 2) + "." })),
-    isNew ? null : logoManager(tm)],
+    isNew ? null : logoManager(tm), sErr],
     [h("button", { class: "btn primary", text: isNew ? "Create team" : "Save", onclick: async () => {
       const lines = x => x.value.split("\n").map(s => s.trim()).filter(Boolean);
+      sErr.textContent = "";
       try {
-        const body = { name: fName.value, categories: lines(fCats), customers: lines(fCust) };
+        const body = { name: fName.value, customers: lines(fCust) };
+        if (isNew) body.categories = lines(fCats);  // an existing team's categories save on their own, in the list above
         if (!isNew) {
           const n = Number(fArch.value);
           if (fArch.value.trim() === "" || !Number.isInteger(n) || n < 0 || n > 90) return toast("Archive after must be a whole number of days from 0 to 90.");
@@ -1049,7 +1093,7 @@ function teamSheet(tm) {
         }
         if (isNew) { const r = await api("POST", "/api/teams", body); closeSheet(); toast("Team created. Next, add its team lead."); await loadMe(); await selectTeam(r.id); S.view = "team"; render(); }
         else { await api("PUT", "/api/teams/" + tm.id, body); closeSheet(); toast("Saved"); await loadMe(); }
-      } catch (e) { toast(e.message); }
+      } catch (e) { sErr.textContent = "Not saved: " + e.message; sErr.scrollIntoView({ block: "nearest" }); toast(e.message); }
     } }), h("button", { class: "btn", text: "Cancel", onclick: closeSheet })]);
 }
 

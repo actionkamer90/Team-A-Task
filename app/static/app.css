@@ -385,3 +385,22 @@ tr.pj-hl td{background:var(--accent-soft)}
 .pj-assign{text-decoration:none;font-weight:600} .pj-assign:hover{text-decoration:underline}
 .pj-tcell{flex-direction:row!important;flex-wrap:wrap;align-items:center!important;column-gap:12px!important}
 .pj-load .c.later{opacity:.8}
+/* Tracker / Archive: all 12 columns fit the screen (scrolls sideways only below about 1150 px, e.g. phones) */
+table.tasks-12{table-layout:fixed;min-width:1120px}
+.tasks-12 col.w-no{width:58px} .tasks-12 col.w-category{width:82px} .tasks-12 col.w-pct{width:84px} .tasks-12 col.w-urgency{width:84px}
+.tasks-12 col.w-customer{width:118px} .tasks-12 col.w-lead{width:88px} .tasks-12 col.w-support{width:98px}
+.tasks-12 col.w-start,.tasks-12 col.w-actual{width:86px} .tasks-12 col.w-target{width:96px} .tasks-12 col.w-status{width:112px}
+.tasks-12 th.sortable button{padding:8px 6px;white-space:normal;line-height:1.2}
+.tasks-12 td{padding:8px 6px;overflow-wrap:anywhere}
+.tasks-12 td.mono{font-size:12px}
+.tasks-12 .pct{white-space:nowrap;overflow-wrap:normal} .tasks-12 .pct i{width:30px}
+.tasks-12 .cust{align-items:flex-start}
+.tasks-12 .task-title{min-width:0}
+.tasks-12 .task-det,.tasks-12 .task-last{max-width:100%}
+.tasks-12 .pill{white-space:normal}
+/* Team settings: task categories */
+.cat-ed{gap:6px}
+.cat-list{display:flex;flex-direction:column;gap:6px}
+.cat-row{display:flex;gap:6px;align-items:center}
+.cat-row input[type=text]{flex:1}
+.cat-row .btn.small{padding:4px 8px}
