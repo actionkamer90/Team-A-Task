@@ -1071,12 +1071,10 @@ function teamSheet(tm) {
   const fName = h("input", { type: "text", id: "tm-name", value: tm?.name || "", maxlength: "80", placeholder: "e.g. Team Network" });
   const sErr = h("p", { class: "bad-text m0", role: "alert" });
   const fCats = h("textarea", { id: "tm-cats" }); fCats.value = (tm?.categories || DEFAULT_CATS).join("\n");
-  const fCust = h("textarea", { id: "tm-cust" }); fCust.value = (tm?.customers || []).join("\n");
   const fArch = h("input", { type: "number", id: "tm-archive", min: "0", max: "90", step: "1", inputmode: "numeric",
     value: String(tm?.archiveDays ?? tm?.archiveDaysDefault ?? 2) });
   openSheet(isNew ? "Create team" : "Team settings", [h("label", { class: "field" }, h("span", { text: "Team name" }), fName),
     isNew ? h("label", { class: "field" }, h("span", { text: "Task categories (one per line)" }), fCats) : categoryEditor(tm.id),
-    h("label", { class: "field" }, h("span", { text: "Customers (one per line, offered as suggestions)" }), fCust),
     isNew ? null : h("label", { class: "field" }, h("span", { text: "Move completed tasks to the Archive after (days)" }), fArch,
       h("small", { class: "muted", text: "Counted from the actual (completed) date, 0 to 90 days. 0 moves a task to the Archive as soon as it is completed. Once archived, only the team lead can change a task. The server default is " + (tm?.archiveDaysDefault ?? 2) + "." })),
     isNew ? null : logoManager(tm), sErr],
@@ -1084,7 +1082,7 @@ function teamSheet(tm) {
       const lines = x => x.value.split("\n").map(s => s.trim()).filter(Boolean);
       sErr.textContent = "";
       try {
-        const body = { name: fName.value, customers: lines(fCust) };
+        const body = { name: fName.value };  // customers are managed on the Clients tab
         if (isNew) body.categories = lines(fCats);  // an existing team's categories save on their own, in the list above
         if (!isNew) {
           const n = Number(fArch.value);
@@ -1108,7 +1106,7 @@ function logoManager(tm) {
   const draw = () => {
     const names = [...new Set([...(team()?.customers || []), ...Object.keys(team()?.logos || {})])].sort((a, b) => a.localeCompare(b));
     box.replaceChildren(h("span", { class: "lbl", text: "Customer icons" }),
-      h("p", { class: "muted small m0", text: "Each customer shows its initials until you upload a logo. PNG, JPG, GIF, WebP or SVG; it is shrunk to a small 64 × 64 icon. Save the customer list above first to add new customers here." }),
+      h("p", { class: "muted small m0", text: "Each customer shows its initials until you upload a logo. PNG, JPG, GIF, WebP or SVG; it is shrunk to a small 64 × 64 icon. To add a customer or choose which teams work with it, use the Clients tab." }),
       names.length ? h("ul", { class: "logo-list" }, names.map(n => {
         const has = !!team()?.logos?.[n];
         const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/svg+xml", class: "sr-only", id: pickerId("logo"),

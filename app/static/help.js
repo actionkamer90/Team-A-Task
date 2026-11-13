@@ -70,7 +70,7 @@ function helpGuide(isAdmin) {
         helpTable(["Role", "Can do"], [
           [B("Member"), "See the team's tasks. Add tasks you lead. Change tasks where you are a Lead Engineer; the changes save straight away. A new target date, or a completed date earlier than today, waits for the team lead's approval. Support engineers can see a task but not change it."],
           [B("Project Manager"), "Everything a member can do, plus create projects and run the plans of the projects they manage. The team lead makes someone a Project Manager on Team & Invites."],
-          [B("Team lead"), "Change any task in the team directly. Approve or reject proposed target dates and backdated completions. See the KPI Dashboard. Invite and remove members. Edit the team's categories, customers and KPI settings. Task categories are in Team & Invites → Team settings: add one (e.g. Maintenance), rename it (its tasks follow), move it up or down, or remove one no task uses. Each change saves straight away."],
+          [B("Team lead"), "Change any task in the team directly. Approve or reject proposed target dates and backdated completions. See the KPI Dashboard. Invite and remove members. Edit the team's categories and KPI settings, and its customers on the Clients tab. Task categories are in Team & Invites → Team settings: add one (e.g. Maintenance), rename it (its tasks follow), move it up or down, or remove one no task uses. Each change saves straight away."],
           [B("Administrator"), "Everything, on every team. Create teams, add team leads and manage other administrators."],
         ])),
       sec("tracker", "Tracker tab",
